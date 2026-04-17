@@ -306,7 +306,7 @@ def send_heartbeat():
         "embeds": [
             {
                 "title": "💓 Heartbeat",
-                "color": 0x3498DB,
+                "color": 770202,
                 "description": "The bot is running normally.",
                 "fields": fields,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
