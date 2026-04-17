@@ -5,7 +5,6 @@ import os
 import sys
 import io
 import logging
-import threading
 from datetime import datetime, timezone
 from requests.adapters import HTTPAdapter, Retry
 from flask import Flask
@@ -48,7 +47,6 @@ ATM_COLOR = 0x770202
 ATM_LOGO_URL = "https://cdn.imgpile.com/f/0PFveX5_xl.png"
 ATM_BANNER_URL = "https://cdn.imgpile.com/f/13NFeJc_xl.png"
 
-# ---------- Keyword-based filtering ----------
 
 KEYWORD_FILTERS = {
     "convoy": True,
@@ -57,7 +55,6 @@ KEYWORD_FILTERS = {
     "special": False,
 }
 
-# ---------- Logging setup ----------
 
 logging.basicConfig(
     level=logging.INFO,
@@ -77,8 +74,6 @@ class LogCaptureHandler(logging.Handler):
 capture_handler = LogCaptureHandler()
 capture_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
 logger.addHandler(capture_handler)
-
-# ---------- HTTP session ----------
 
 session = requests.Session()
 retries = Retry(
@@ -579,8 +574,6 @@ def run_startup_self_test():
         logger.error(f"Failed to send startup self-test: {e}")
 
 
-# ---------- Filtering helpers ----------
-
 def filter_events_by_keywords(events):
     filtered = {}
 
@@ -618,11 +611,10 @@ def filter_events_by_date(events, date_str):
     return filtered
 
 
-# ---------- Flask debug server (HTML) ----------
-
 app = Flask(__name__)
 
 
+# UPDATED /debug/db WITH FILTERING UI
 @app.route("/debug/db", methods=["GET"])
 def debug_db():
     try:
@@ -641,31 +633,62 @@ def debug_db():
             th { background: #333; }
             tr:nth-child(even) { background: #2a2a2a; }
             h1 { color: #4da3ff; }
+            input { padding: 8px; width: 250px; margin-right: 10px; }
         </style>
+
+        <script>
+            function filterTable() {
+                let keyword = document.getElementById("keyword").value.toLowerCase();
+                let date = document.getElementById("date").value;
+
+                let rows = document.querySelectorAll("tbody tr");
+
+                rows.forEach(row => {
+                    let name = row.getAttribute("data-name");
+                    let start = row.getAttribute("data-start");
+
+                    let matchKeyword = keyword === "" || name.includes(keyword);
+                    let matchDate = date === "" || start.startsWith(date);
+
+                    row.style.display = (matchKeyword && matchDate) ? "" : "none";
+                });
+            }
+        </script>
     </head>
     <body>
         <h1>Events Database</h1>
+
+        <input id="keyword" placeholder="Search keyword..." onkeyup="filterTable()">
+        <input id="date" type="date" onchange="filterTable()">
+
         <table>
-            <tr>
-                <th>ID</th>
-                <th>Event Name</th>
-                <th>Server</th>
-                <th>Start Time</th>
-            </tr>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Event Name</th>
+                    <th>Server</th>
+                    <th>Start Time</th>
+                </tr>
+            </thead>
+            <tbody>
     """
 
     for event_id, event in data.items():
+        name = (event.get("name") or "").lower()
+        start = event.get("start_at") or ""
         server_name = event.get("server", {}).get("name") if isinstance(event.get("server"), dict) else event.get("server")
+
         html += f"""
-        <tr>
+        <tr data-name="{name}" data-start="{start}">
             <td>{event_id}</td>
             <td>{event.get('name')}</td>
             <td>{server_name}</td>
-            <td>{event.get('start_at')}</td>
+            <td>{start}</td>
         </tr>
         """
 
     html += """
+            </tbody>
         </table>
     </body>
     </html>
@@ -724,12 +747,111 @@ def debug_logs():
     return html
 
 
-def start_debug_server():
-    logger.info("Starting HTTP debug server on port 8080")
-    app.run(host="0.0.0.0", port=8080)
+@app.route("/debug/stats", methods=["GET"])
+def debug_stats():
+    try:
+        data = load_db()
+    except Exception as e:
+        return f"<h1>Error loading stats</h1><p>{e}</p>", 500
 
+    total = len(data)
 
-# ---------- Discord slash commands ----------
+    per_month = {}
+    cities = {}
+    servers = {}
+    keywords = {}
+
+    for event in data.values():
+        start = event.get("start_at", "")
+        name = event.get("name", "").lower()
+        desc = event.get("description", "").lower()
+
+        if len(start) >= 7:
+            month = start[:7]
+            per_month[month] = per_month.get(month, 0) + 1
+
+        dep = event.get("departure", {}).get("city")
+        if dep:
+            cities[dep] = cities.get(dep, 0) + 1
+
+        server = event.get("server", {}).get("name")
+        if server:
+            servers[server] = servers.get(server, 0) + 1
+
+        for kw in KEYWORD_FILTERS.keys():
+            if kw in name or kw in desc:
+                keywords[kw] = keywords.get(kw, 0) + 1
+
+    html = """
+    <html>
+    <head>
+        <title>Event Statistics</title>
+        <style>
+            body { font-family: Arial; background: #1e1e1e; color: white; padding: 20px; }
+            h1 { color: #4da3ff; }
+            h2 { color: #4da3ff; margin-top: 30px; }
+            table { width: 50%; border-collapse: collapse; margin-top: 10px; }
+            th, td { border: 1px solid #444; padding: 8px; }
+            th { background: #333; }
+        </style>
+    </head>
+    <body>
+        <h1>Event Statistics</h1>
+
+        <h2>General</h2>
+        <p>Total events: <b>{}</b></p>
+    """.format(total)
+
+    html += """
+        <h2>Events per Month</h2>
+        <table>
+            <tr><th>Month</th><th>Count</th></tr>
+    """
+
+    for month, count in sorted(per_month.items()):
+        html += f"<tr><td>{month}</td><td>{count}</td></tr>"
+
+    html += """
+        </table>
+
+        <h2>Most Common Cities</h2>
+        <table>
+            <tr><th>City</th><th>Count</th></tr>
+    """
+
+    for city, count in sorted(cities.items(), key=lambda x: -x[1]):
+        html += f"<tr><td>{city}</td><td>{count}</td></tr>"
+
+    html += """
+        </table>
+
+        <h2>Most Common Servers</h2>
+        <table>
+            <tr><th>Server</th><th>Count</th></tr>
+    """
+
+    for server, count in sorted(servers.items(), key=lambda x: -x[1]):
+        html += f"<tr><td>{server}</td><td>{count}</td></tr>"
+
+    html += """
+        </table>
+
+        <h2>Keyword Frequency</h2>
+        <table>
+            <tr><th>Keyword</th><th>Matches</th></tr>
+    """
+
+    for kw, count in sorted(keywords.items(), key=lambda x: -x[1]):
+        html += f"<tr><td>{kw}</td><td>{count}</td></tr>"
+
+    html += """
+        </table>
+
+    </body>
+    </html>
+    """
+
+    return html
 
 intents = discord.Intents.default()
 discord_bot = discord.Client(intents=intents)
@@ -811,9 +933,6 @@ async def filter_toggle(interaction: discord.Interaction, keyword: str, enabled:
     status = "enabled" if enabled else "disabled"
     await interaction.response.send_message(f"✅ Filter **{key}** is now **{status}**")
 
-
-# ---------- Main loop ----------
-
 def main():
     global LAST_SUMMARY_DATE, RESTARTS_TODAY
 
@@ -864,22 +983,26 @@ def main():
                     logger.info(f"Detected {len(changes)} change(s)")
                     for change_type, event, diffs in changes:
                         send_to_discord(event, change_type, diffs)
+                    save_db
                     save_db(new_db)
                 else:
                     logger.info("No changes detected")
             else:
                 logger.warning("API returned no data this loop")
 
+            # Heartbeat every 30 minutes
             if now - last_heartbeat_time >= 1800:
                 send_heartbeat()
                 last_heartbeat_time = now
 
+            # Daily summary at midnight UTC
             today_iso = now_utc.date().isoformat()
             if now_utc.hour == 0 and now_utc.minute == 0 and LAST_SUMMARY_DATE != today_iso:
                 send_daily_summary()
                 LAST_SUMMARY_DATE = today_iso
                 reset_daily_counters()
 
+            # Restart every 24 hours
             if should_restart():
                 RESTARTS_TODAY += 1
                 logger.warning("Restarting bot due to 24h uptime limit")
@@ -889,17 +1012,14 @@ def main():
         logger.info("Bot stopped via KeyboardInterrupt")
         sys.exit(0)
 
-
 if __name__ == "__main__":
-    threading.Thread(target=start_debug_server, daemon=True).start()
-    logger.info("HTTP debug server thread started")
+    logger.info("HTTP debug server starting on port 8080")
 
-    if DISCORD_BOT_TOKEN:
-        threading.Thread(target=discord_bot.run, args=(DISCORD_BOT_TOKEN,), daemon=True).start()
-        logger.info("Discord bot thread started")
-    else:
-        logger.warning("DISCORD_BOT_TOKEN not set — slash commands disabled")
+    # Start Flask debug server (threaded)
+    import threading
+    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=8080), daemon=True).start()
 
+    logger.info("Starting main monitoring loop")
     try:
         main()
     except Exception as e:
