@@ -11,7 +11,7 @@ from requests.adapters import HTTPAdapter, Retry
 from flask import Flask, jsonify
 from collections import deque
 
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
 API_URL = "https://api.truckersmp.com/v2/vtc/49940/events/attending"
 WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_URL"]
