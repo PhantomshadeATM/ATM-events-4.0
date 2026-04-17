@@ -8,8 +8,11 @@ import logging
 import threading
 from datetime import datetime, timezone
 from requests.adapters import HTTPAdapter, Retry
-from flask import Flask, jsonify
+from flask import Flask
 from collections import deque
+
+import discord
+from discord import app_commands
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
@@ -18,6 +21,7 @@ WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_URL"]
 ERROR_WEBHOOK_URL = os.environ.get("DISCORD_ERROR_WEBHOOK_URL")
 HEARTBEAT_WEBHOOK_URL = os.environ.get("DISCORD_HEARTBEAT_WEBHOOK_URL")
 DAILY_SUMMARY_WEBHOOK_URL = os.environ.get("DISCORD_DAILY_SUMMARY_WEBHOOK_URL")
+DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
 
 DB_FILE = "events_db.json"
 START_TIME = time.time()
@@ -43,6 +47,15 @@ LAST_SUMMARY_DATE = None
 ATM_COLOR = 0x770202
 ATM_LOGO_URL = "https://cdn.imgpile.com/f/0PFveX5_xl.png"
 ATM_BANNER_URL = "https://cdn.imgpile.com/f/13NFeJc_xl.png"
+
+# ---------- Keyword-based filtering ----------
+
+KEYWORD_FILTERS = {
+    "convoy": True,
+    "training": False,
+    "atm": True,
+    "special": False,
+}
 
 # ---------- Logging setup ----------
 
@@ -72,7 +85,7 @@ retries = Retry(
     total=5,
     backoff_factor=2,
     status_forcelist=[429, 500, 502, 503, 504],
-    allowed_methods=["GET", "POST"]
+    allowed_methods=["GET", "POST"],
 )
 session.mount("https://", HTTPAdapter(max_retries=retries))
 
@@ -131,11 +144,13 @@ def report_error(title, message, details=None):
     }
 
     if details:
-        embed["embeds"][0]["fields"].append({
-            "name": "Details",
-            "value": f"```{details[:1900]}```",
-            "inline": False
-        })
+        embed["embeds"][0]["fields"].append(
+            {
+                "name": "Details",
+                "value": f"```{details[:1900]}```",
+                "inline": False,
+            }
+        )
 
     try:
         session.post(ERROR_WEBHOOK_URL, json=embed, timeout=15)
@@ -288,7 +303,7 @@ def build_embed(event, change_type="created", diffs=None):
                     {"name": "📅 Date", "value": event_date, "inline": False},
                     {"name": "🕒 Meetup Time", "value": meetup_time, "inline": True},
                     {"name": "🚦 Departure Time", "value": departure_time, "inline": True},
-                    {"name": "🌍 Server", "value": event['server']['name'], "inline": False},
+                    {"name": "🌍 Server", "value": event["server"]["name"], "inline": False},
                     {"name": "🚩 Start Location", "value": start_location, "inline": False},
                     {"name": "🏁 End Location", "value": end_location, "inline": False},
                 ],
@@ -308,6 +323,7 @@ def build_embed(event, change_type="created", diffs=None):
         embed["embeds"][0]["fields"].append({"name": "🔧 Changes", "value": diff_text, "inline": False})
 
     return embed
+
 
 def send_to_discord(event, change_type, diffs=None):
     embed = build_embed(event, change_type, diffs)
@@ -563,7 +579,46 @@ def run_startup_self_test():
         logger.error(f"Failed to send startup self-test: {e}")
 
 
-# ---------- Flask debug server ----------
+# ---------- Filtering helpers ----------
+
+def filter_events_by_keywords(events):
+    filtered = {}
+
+    for event_id, event in events.items():
+        name = event.get("name", "").lower()
+        description = event.get("description", "").lower()
+        departure = event.get("departure", {}).get("city", "").lower()
+        arrival = event.get("arrive", {}).get("city", "").lower()
+
+        for keyword, enabled in KEYWORD_FILTERS.items():
+            if not enabled:
+                continue
+            if (
+                keyword in name
+                or keyword in description
+                or keyword in departure
+                or keyword in arrival
+            ):
+                filtered[event_id] = event
+                break
+
+    return filtered
+
+
+def filter_events_by_date(events, date_str):
+    filtered = {}
+
+    for event_id, event in events.items():
+        start_at = event.get("start_at")
+        if not start_at:
+            continue
+        if start_at.startswith(date_str):
+            filtered[event_id] = event
+
+    return filtered
+
+
+# ---------- Flask debug server (HTML) ----------
 
 app = Flask(__name__)
 
@@ -572,22 +627,189 @@ app = Flask(__name__)
 def debug_db():
     try:
         data = load_db()
-        return jsonify(data), 200
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return f"<h1>Error loading DB</h1><p>{e}</p>", 500
+
+    html = """
+    <html>
+    <head>
+        <title>Events DB Viewer</title>
+        <style>
+            body { font-family: Arial; background: #1e1e1e; color: white; padding: 20px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            th, td { border: 1px solid #444; padding: 8px; text-align: left; }
+            th { background: #333; }
+            tr:nth-child(even) { background: #2a2a2a; }
+            h1 { color: #4da3ff; }
+        </style>
+    </head>
+    <body>
+        <h1>Events Database</h1>
+        <table>
+            <tr>
+                <th>ID</th>
+                <th>Event Name</th>
+                <th>Server</th>
+                <th>Start Time</th>
+            </tr>
+    """
+
+    for event_id, event in data.items():
+        server_name = event.get("server", {}).get("name") if isinstance(event.get("server"), dict) else event.get("server")
+        html += f"""
+        <tr>
+            <td>{event_id}</td>
+            <td>{event.get('name')}</td>
+            <td>{server_name}</td>
+            <td>{event.get('start_at')}</td>
+        </tr>
+        """
+
+    html += """
+        </table>
+    </body>
+    </html>
+    """
+
+    return html
 
 
 @app.route("/debug/logs", methods=["GET"])
 def debug_logs():
     try:
-        return jsonify(list(LOG_BUFFER)), 200
+        logs = list(LOG_BUFFER)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return f"<h1>Error loading logs</h1><p>{e}</p>", 500
+
+    html = """
+    <html>
+    <head>
+        <title>Bot Logs</title>
+        <style>
+            body { font-family: Consolas, monospace; background: #1e1e1e; color: #ddd; padding: 20px; }
+            .log-container {
+                background: #111;
+                padding: 20px;
+                border-radius: 8px;
+                height: 80vh;
+                overflow-y: scroll;
+                white-space: pre-wrap;
+            }
+            .info { color: #4da3ff; }
+            .warning { color: #ffcc00; }
+            .error { color: #ff4d4d; }
+            h1 { color: #4da3ff; }
+        </style>
+    </head>
+    <body>
+        <h1>Bot Logs</h1>
+        <div class="log-container">
+    """
+
+    for line in logs:
+        css_class = "info"
+        if "ERROR" in line:
+            css_class = "error"
+        elif "WARNING" in line:
+            css_class = "warning"
+
+        html += f"<div class='{css_class}'>{line}</div>"
+
+    html += """
+        </div>
+    </body>
+    </html>
+    """
+
+    return html
 
 
 def start_debug_server():
     logger.info("Starting HTTP debug server on port 8080")
     app.run(host="0.0.0.0", port=8080)
+
+
+# ---------- Discord slash commands ----------
+
+intents = discord.Intents.default()
+discord_bot = discord.Client(intents=intents)
+tree = app_commands.CommandTree(discord_bot)
+
+
+@discord_bot.event
+async def on_ready():
+    await tree.sync()
+    logger.info(f"Slash commands synced as {discord_bot.user}")
+
+
+@tree.command(name="search_keyword", description="Search ATM events by keyword")
+@app_commands.describe(keyword="Keyword to search for")
+async def search_keyword(interaction: discord.Interaction, keyword: str):
+    try:
+        events = load_db()
+    except Exception:
+        return await interaction.response.send_message("❌ Could not load events DB")
+
+    keyword_lower = keyword.lower()
+    results = []
+
+    for event in events.values():
+        if keyword_lower in event.get("name", "").lower() or \
+           keyword_lower in event.get("description", "").lower():
+            results.append(event)
+
+    if not results:
+        return await interaction.response.send_message(f"No events found for keyword: **{keyword}**")
+
+    text = f"**Events matching '{keyword}':**\n"
+    for e in results[:10]:
+        text += f"- **{e.get('name')}** on `{e.get('start_at')}`\n"
+
+    await interaction.response.send_message(text)
+
+
+@tree.command(name="search_date", description="Search ATM events by date (YYYY-MM-DD)")
+@app_commands.describe(date="Date in YYYY-MM-DD format")
+async def search_date(interaction: discord.Interaction, date: str):
+    try:
+        events = load_db()
+    except Exception:
+        return await interaction.response.send_message("❌ Could not load events DB")
+
+    results = filter_events_by_date(events, date)
+
+    if not results:
+        return await interaction.response.send_message(f"No events found on **{date}**")
+
+    text = f"**Events on {date}:**\n"
+    for e in results.values():
+        text += f"- **{e.get('name')}** at `{e.get('start_at')}`\n"
+
+    await interaction.response.send_message(text)
+
+
+@tree.command(name="filters", description="Show current keyword filters")
+async def filters_cmd(interaction: discord.Interaction):
+    text = "**Current Keyword Filters:**\n"
+    for key, value in KEYWORD_FILTERS.items():
+        status = "🟢 Enabled" if value else "🔴 Disabled"
+        text += f"- **{key}** → {status}\n"
+
+    await interaction.response.send_message(text)
+
+
+@tree.command(name="filter_toggle", description="Enable or disable a keyword filter")
+@app_commands.describe(keyword="Keyword to toggle", enabled="true or false")
+async def filter_toggle(interaction: discord.Interaction, keyword: str, enabled: bool):
+    key = keyword.lower()
+    if key not in KEYWORD_FILTERS:
+        return await interaction.response.send_message(
+            f"❌ Unknown keyword. Available: {', '.join(KEYWORD_FILTERS.keys())}"
+        )
+
+    KEYWORD_FILTERS[key] = enabled
+    status = "enabled" if enabled else "disabled"
+    await interaction.response.send_message(f"✅ Filter **{key}** is now **{status}**")
 
 
 # ---------- Main loop ----------
@@ -609,6 +831,8 @@ def main():
     if new_db is None:
         logger.warning("API unreachable at startup — using empty baseline")
         new_db = {}
+    else:
+        new_db = filter_events_by_keywords(new_db)
 
     if not old_db:
         save_db(new_db)
@@ -634,6 +858,7 @@ def main():
             new_db = fetch_events()
 
             if new_db is not None:
+                new_db = filter_events_by_keywords(new_db)
                 changes = detect_changes(old_db, new_db)
                 if changes:
                     logger.info(f"Detected {len(changes)} change(s)")
@@ -668,6 +893,12 @@ def main():
 if __name__ == "__main__":
     threading.Thread(target=start_debug_server, daemon=True).start()
     logger.info("HTTP debug server thread started")
+
+    if DISCORD_BOT_TOKEN:
+        threading.Thread(target=discord_bot.run, args=(DISCORD_BOT_TOKEN,), daemon=True).start()
+        logger.info("Discord bot thread started")
+    else:
+        logger.warning("DISCORD_BOT_TOKEN not set — slash commands disabled")
 
     try:
         main()
