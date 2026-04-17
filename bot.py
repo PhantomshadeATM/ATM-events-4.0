@@ -21,7 +21,6 @@ START_TIME = time.time()
 API_LATENCIES = []
 LAST_API_LATENCY = None
 
-# Daily stats
 EVENTS_ADDED_TODAY = 0
 EVENTS_UPDATED_TODAY = 0
 EVENTS_REMOVED_TODAY = 0
@@ -35,9 +34,8 @@ ERRORS_REPORTED_TODAY = 0
 RESTARTS_TODAY = 0
 
 LAST_SUCCESSFUL_SYNC = None
-LAST_SUMMARY_DATE = None  # ISO date string, e.g. "2026-04-17"
+LAST_SUMMARY_DATE = None
 
-# ATM branding
 ATM_COLOR = 0x770202
 ATM_LOGO_URL = "https://cdn.imgpile.com/f/0PFveX5_xl.png"
 ATM_BANNER_URL = "https://cdn.imgpile.com/f/13NFeJc_xl.png"
@@ -52,6 +50,13 @@ retries = Retry(
 session.mount("https://", HTTPAdapter(max_retries=retries))
 
 
+def ensure_database_exists():
+    if not os.path.exists(DB_FILE):
+        with open(DB_FILE, "w", encoding="utf-8") as f:
+            json.dump({}, f, indent=2)
+        print("[INIT] Created empty events_db.json", flush=True)
+
+
 def should_restart():
     return (time.time() - START_TIME) >= 86400
 
@@ -60,7 +65,7 @@ def load_db():
     try:
         with open(DB_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+    except:
         return {}
 
 
@@ -110,17 +115,15 @@ def record_latency(latency):
     now = time.time()
     LAST_API_LATENCY = latency
     API_LATENCIES.append((now, latency))
-
-    cutoff = now - 43200  # 12 hours
-    API_LATENCIES = [(t, l) for (t, l) in API_LATENCIES if t >= cutoff]
+    API_LATENCIES = [(t, l) for (t, l) in API_LATENCIES if t >= now - 43200]
 
 
 def get_latency_metrics():
     if not API_LATENCIES:
         return None, None
-    last_latency = LAST_API_LATENCY
-    avg_latency = sum(l for _, l in API_LATENCIES) / len(API_LATENCIES)
-    return last_latency, avg_latency
+    last = LAST_API_LATENCY
+    avg = sum(l for _, l in API_LATENCIES) / len(API_LATENCIES)
+    return last, avg
 
 
 def get_latency_extremes():
@@ -138,13 +141,12 @@ def fetch_events():
 
     try:
         response = session.get(API_URL, timeout=25)
-    except requests.RequestException as e:
+    except Exception as e:
         report_error("API Request Failed", "The TruckersMP API did not respond.", str(e))
         return None
 
     elapsed = time.time() - start
     record_latency(elapsed)
-    print(f"[DEBUG] API response time: {elapsed:.2f}s", flush=True)
 
     if response.status_code != 200:
         report_error("API HTTP Error", f"Status {response.status_code}", response.text[:1500])
@@ -152,7 +154,7 @@ def fetch_events():
 
     try:
         data = response.json()
-    except ValueError:
+    except:
         report_error("Invalid JSON Response", "Malformed JSON.", response.text[:1000])
         return None
 
@@ -161,8 +163,6 @@ def fetch_events():
         return None
 
     events = data.get("response", [])
-    print(f"[DEBUG] Got {len(events)} events", flush=True)
-
     API_SUCCESSES_TODAY += 1
     LAST_SUCCESSFUL_SYNC = datetime.now(timezone.utc)
 
@@ -172,11 +172,50 @@ def fetch_events():
 def discord_timestamp(dt_str, style="F"):
     try:
         dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-        unix_ts = int(dt.timestamp())
-        return f"<t:{unix_ts}:{style}>"
-    except Exception:
+        return f"<t:{int(dt.timestamp())}:{style}>"
+    except:
         return dt_str
 
+
+def compare_events(old_event, new_event):
+    fields = {
+        "name": "Name",
+        "start_at": "Start Time",
+        "meetup_at": "Meetup Time",
+        "server": "Server",
+        "map": "Map",
+        "banner": "Banner",
+        "departure": "Start Location",
+        "arrive": "End Location",
+        "description": "Description",
+    }
+
+    diffs = {}
+
+    for key, label in fields.items():
+        old_val = old_event.get(key)
+        new_val = new_event.get(key)
+
+        if key == "server":
+            old_val = old_val.get("name") if isinstance(old_val, dict) else old_val
+            new_val = new_val.get("name") if isinstance(new_val, dict) else new_val
+
+        if key in ("departure", "arrive"):
+            if isinstance(old_val, dict):
+                old_val = f"{old_val.get('city')} ({old_val.get('location')})"
+            if isinstance(new_val, dict):
+                new_val = f"{new_val.get('city')} ({new_val.get('location')})"
+
+        if key in ("start_at", "meetup_at"):
+            if old_val:
+                old_val = discord_timestamp(old_val, "F")
+            if new_val:
+                new_val = discord_timestamp(new_val, "F")
+
+        if old_val != new_val:
+            diffs[label] = (old_val, new_val)
+
+    return diffs
 
 def build_embed(event, change_type="created", diffs=None):
     meetup_time = discord_timestamp(event.get("meetup_at"), "F") if event.get("meetup_at") else "Not specified"
@@ -239,7 +278,7 @@ def send_to_discord(event, change_type, diffs=None):
 
     try:
         result = session.post(WEBHOOK_URL, json=embed, timeout=20)
-    except requests.RequestException as e:
+    except Exception as e:
         report_error("Discord Webhook Failure", f"Failed to send event: {event['name']}", str(e))
         return
 
@@ -271,52 +310,6 @@ def detect_changes(old_db, new_db):
     return changes
 
 
-def compare_events(old_event, new_event):
-    fields_to_check = {
-        "name": "Name",
-        "start_at": "Start Time",
-        "meetup_at": "Meetup Time",
-        "server": "Server",
-        "map": "Map",
-        "banner": "Banner",
-        "departure": "Start Location",
-        "arrive": "End Location",
-        "description": "Description",
-    }
-
-    diffs = {}
-
-    for key, label in fields_to_check.items():
-        old_val = old_event.get(key)
-        new_val = new_event.get(key)
-
-        if key == "server":
-            old_val = old_val.get("name") if isinstance(old_val, dict) else old_val
-            new_val = new_val.get("name") if isinstance(new_val, dict) else new_val
-
-        if key in ("departure", "arrive"):
-            if isinstance(old_val, dict):
-                old_val = f"{old_val.get('city')} ({old_val.get('location')})"
-            if isinstance(new_val, dict):
-                new_val = f"{new_val.get('city')} ({new_val.get('location')})"
-
-        if key in ("start_at", "meetup_at"):
-            if old_val:
-                old_val = discord_timestamp(old_val, "F")
-            if new_val:
-                new_val = discord_timestamp(new_val, "F")
-
-        if key == "description":
-            if old_val != new_val:
-                diffs[label] = (old_val, new_val)
-            continue
-
-        if old_val != new_val:
-            diffs[label] = (old_val, new_val)
-
-    return diffs
-
-
 def send_heartbeat():
     global HEARTBEATS_SENT_TODAY
 
@@ -326,26 +319,14 @@ def send_heartbeat():
     last_latency, avg_latency = get_latency_metrics()
 
     fields = [
-        {
-            "name": "Heartbeat Time",
-            "value": f"<t:{int(time.time())}:F>",
-            "inline": False
-        }
+        {"name": "Heartbeat Time", "value": f"<t:{int(time.time())}:F>", "inline": False}
     ]
 
     if last_latency is not None:
-        fields.append({
-            "name": "Last API latency",
-            "value": f"{last_latency:.2f} seconds",
-            "inline": True
-        })
+        fields.append({"name": "Last API latency", "value": f"{last_latency:.2f} seconds", "inline": True})
 
     if avg_latency is not None:
-        fields.append({
-            "name": "12h average API latency",
-            "value": f"{avg_latency:.2f} seconds",
-            "inline": True
-        })
+        fields.append({"name": "12h average API latency", "value": f"{avg_latency:.2f} seconds", "inline": True})
 
     embed = {
         "username": "TruckersMP Events Bot — Heartbeat",
@@ -363,14 +344,12 @@ def send_heartbeat():
     try:
         session.post(HEARTBEAT_WEBHOOK_URL, json=embed, timeout=15)
         HEARTBEATS_SENT_TODAY += 1
-        print("[HEARTBEAT] Sent heartbeat to Discord.", flush=True)
     except Exception as e:
         report_error("Heartbeat Send Failure", "Failed to send heartbeat message.", str(e))
 
 
 def send_daily_summary():
     if not DAILY_SUMMARY_WEBHOOK_URL:
-        print("[DAILY SUMMARY] No DAILY_SUMMARY_WEBHOOK_URL set, skipping.", flush=True)
         return
 
     now_utc = datetime.now(timezone.utc)
@@ -447,31 +426,11 @@ def send_daily_summary():
                 "color": ATM_COLOR,
                 "description": f"Generated at: <t:{unix_now}:F>",
                 "fields": [
-                    {
-                        "name": "🟥 API Health",
-                        "value": "\n".join(api_health_lines),
-                        "inline": False
-                    },
-                    {
-                        "name": "🚚 Event Activity",
-                        "value": "\n".join(event_activity_lines),
-                        "inline": False
-                    },
-                    {
-                        "name": "🏢 ATM VTC Highlights",
-                        "value": "\n".join(vtc_highlights_lines),
-                        "inline": False
-                    },
-                    {
-                        "name": "🧠 Bot Health",
-                        "value": "\n".join(bot_health_lines),
-                        "inline": False
-                    },
-                    {
-                        "name": "🕒 Last successful sync",
-                        "value": last_sync_value,
-                        "inline": False
-                    },
+                    {"name": "🟥 API Health", "value": "\n".join(api_health_lines), "inline": False},
+                    {"name": "🚚 Event Activity", "value": "\n".join(event_activity_lines), "inline": False},
+                    {"name": "🏢 ATM VTC Highlights", "value": "\n".join(vtc_highlights_lines), "inline": False},
+                    {"name": "🧠 Bot Health", "value": "\n".join(bot_health_lines), "inline": False},
+                    {"name": "🕒 Last successful sync", "value": last_sync_value, "inline": False},
                 ],
                 "thumbnail": {"url": ATM_LOGO_URL},
                 "image": {"url": ATM_BANNER_URL},
@@ -483,7 +442,6 @@ def send_daily_summary():
 
     try:
         session.post(DAILY_SUMMARY_WEBHOOK_URL, json=embed, timeout=20)
-        print("[DAILY SUMMARY] Sent daily summary to Discord.", flush=True)
     except Exception as e:
         report_error("Daily Summary Failure", "Failed to send daily summary.", str(e))
 
@@ -508,11 +466,6 @@ def reset_daily_counters():
 
 
 def run_startup_self_test():
-    """
-    Runs a full system diagnostic when the bot starts.
-    Sends an ATM‑branded embed to the Daily Summary webhook.
-    """
-
     now_utc = datetime.now(timezone.utc)
     unix_now = int(now_utc.timestamp())
 
@@ -529,7 +482,7 @@ def run_startup_self_test():
     try:
         api_test = session.get(API_URL, timeout=10)
         checks["TruckersMP API"] = api_test.status_code == 200
-    except Exception:
+    except:
         checks["TruckersMP API"] = False
 
     def status_icon(ok):
@@ -559,9 +512,6 @@ def run_startup_self_test():
     try:
         if DAILY_SUMMARY_WEBHOOK_URL:
             session.post(DAILY_SUMMARY_WEBHOOK_URL, json=embed, timeout=15)
-            print("[SELF‑TEST] Startup self‑test sent.", flush=True)
-        else:
-            print("[SELF‑TEST] DAILY_SUMMARY_WEBHOOK_URL not set, self‑test not sent.", flush=True)
     except Exception as e:
         print(f"[SELF‑TEST ERROR] Failed to send startup test: {e}", flush=True)
 
@@ -571,6 +521,7 @@ def main():
 
     print("TruckersMP Event Bot started...", flush=True)
 
+    ensure_database_exists()
     run_startup_self_test()
 
     now_utc = datetime.now(timezone.utc)
@@ -596,7 +547,7 @@ def main():
 
     try:
         while True:
-            time.sleep(60)  # 1-minute loop for precise 00:00 UTC
+            time.sleep(60)
 
             now = time.time()
             now_utc = datetime.now(timezone.utc)
@@ -611,7 +562,7 @@ def main():
                         send_to_discord(event, change_type, diffs)
                     save_db(new_db)
 
-            if now - last_heartbeat_time >= 1800:  # 30 minutes
+            if now - last_heartbeat_time >= 1800:
                 send_heartbeat()
                 last_heartbeat_time = now
 
