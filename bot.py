@@ -17,13 +17,9 @@ HEARTBEAT_WEBHOOK_URL = os.environ.get("DISCORD_HEARTBEAT_WEBHOOK_URL")
 DB_FILE = "events_db.json"
 START_TIME = time.time()
 
-# latency tracking (for heartbeat)
-API_LATENCIES = []  # list of (timestamp, latency_seconds)
+API_LATENCIES = []
 LAST_API_LATENCY = None
 
-# -----------------------------
-# Retry-enabled session
-# -----------------------------
 session = requests.Session()
 retries = Retry(
     total=5,
@@ -90,8 +86,7 @@ def record_latency(latency):
     LAST_API_LATENCY = latency
     API_LATENCIES.append((now, latency))
 
-    # keep only last 12 hours of data
-    cutoff = now - 43200  # 12h
+    cutoff = now - 43200
     API_LATENCIES = [(t, l) for (t, l) in API_LATENCIES if t >= cutoff]
 
 
@@ -103,20 +98,13 @@ def get_latency_metrics():
     return last_latency, avg_latency
 
 
-# -----------------------------
-# Improved fetch_events()
-# -----------------------------
 def fetch_events():
     start = time.time()
 
     try:
         response = session.get(API_URL, timeout=25)
     except requests.RequestException as e:
-        report_error(
-            "API Request Failed",
-            "The TruckersMP API did not respond.",
-            str(e)
-        )
+        report_error("API Request Failed", "The TruckersMP API did not respond.", str(e))
         return None
 
     elapsed = time.time() - start
@@ -124,29 +112,17 @@ def fetch_events():
     print(f"[DEBUG] API response time: {elapsed:.2f}s", flush=True)
 
     if response.status_code != 200:
-        report_error(
-            "API HTTP Error",
-            f"TruckersMP API returned status {response.status_code}.",
-            response.text[:1500]
-        )
+        report_error("API HTTP Error", f"Status {response.status_code}", response.text[:1500])
         return None
 
     try:
         data = response.json()
     except ValueError:
-        report_error(
-            "Invalid JSON Response",
-            "TruckersMP API returned malformed JSON.",
-            response.text[:1000]
-        )
+        report_error("Invalid JSON Response", "Malformed JSON.", response.text[:1000])
         return None
 
     if data.get("error") or "response" not in data:
-        report_error(
-            "Invalid API Structure",
-            "The API response did not contain expected fields.",
-            json.dumps(data, indent=2)[:1500]
-        )
+        report_error("Invalid API Structure", "Missing expected fields.", json.dumps(data, indent=2)[:1500])
         return None
 
     events = data.get("response", [])
@@ -165,17 +141,9 @@ def discord_timestamp(dt_str, style="F"):
 
 
 def build_embed(event, change_type="created", diffs=None):
-    meetup_time = (
-        discord_timestamp(event["meetup_at"], "F")
-        if event.get("meetup_at")
-        else "Not specified"
-    )
-    departure_time = (
-        discord_timestamp(event["start_at"], "F")
-        if event.get("start_at")
-        else "Not specified"
-    )
-    event_date = discord_timestamp(event["start_at"], "F")
+    meetup_time = discord_timestamp(event.get("meetup_at"), "F") if event.get("meetup_at") else "Not specified"
+    departure_time = discord_timestamp(event.get("start_at"), "F") if event.get("start_at") else "Not specified"
+    event_date = discord_timestamp(event.get("start_at"), "F")
 
     start_location = f"{event['departure']['city']} ({event['departure']['location']})"
     end_location = f"{event['arrive']['city']} ({event['arrive']['location']})"
@@ -200,48 +168,30 @@ def build_embed(event, change_type="created", diffs=None):
                 "description": (
                     f"✨ **Organized by:** {event['vtc']['name']}\n"
                     f"🎮 **Game:** {event['game']}\n"
-                    f"🔗 [View Event on TruckersMP](https://truckersmp.com{event['url']})"
+                    f"🔗 [View Event](https://truckersmp.com{event['url']})"
                 ),
                 "fields": [
-                    {"name": "📅 Date", "value": f"{event_date}", "inline": False},
-                    {"name": "🕒 Meetup Time", "value": f"{meetup_time}", "inline": True},
-                    {
-                        "name": "🚦 Departure Time",
-                        "value": f"{departure_time}",
-                        "inline": True,
-                    },
-                    {
-                        "name": "🌍 Server",
-                        "value": f"**{event['server']['name']}**",
-                        "inline": False,
-                    },
-                    {
-                        "name": "🚩 Start Location",
-                        "value": start_location,
-                        "inline": False,
-                    },
+                    {"name": "📅 Date", "value": event_date, "inline": False},
+                    {"name": "🕒 Meetup Time", "value": meetup_time, "inline": True},
+                    {"name": "🚦 Departure Time", "value": departure_time, "inline": True},
+                    {"name": "🌍 Server", "value": event['server']['name'], "inline": False},
+                    {"name": "🚩 Start Location", "value": start_location, "inline": False},
                     {"name": "🏁 End Location", "value": end_location, "inline": False},
                 ],
                 "image": {"url": event.get("map", "")},
                 "thumbnail": {"url": event.get("banner", "")},
-                "footer": {"text": f"Event ID: {event['id']} | TruckersMP API"},
+                "footer": {"text": f"Event ID: {event['id']}"},
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
         ],
     }
 
     if change_type == "updated" and diffs:
-        diff_lines = []
-        for field, (old, new) in diffs.items():
-            if field == "Description":
-                diff_lines.append("📝 **Description changed**")
-            else:
-                diff_lines.append(f"**{field}:** `{old}` → `{new}`")
-
-        diff_text = "\n".join(diff_lines)
-        embed["embeds"][0]["fields"].append(
-            {"name": "🔧 Changes", "value": diff_text or "No details", "inline": False}
+        diff_text = "\n".join(
+            f"**{label}:** `{old}` → `{new}`" if label != "Description" else "📝 **Description changed**"
+            for label, (old, new) in diffs.items()
         )
+        embed["embeds"][0]["fields"].append({"name": "🔧 Changes", "value": diff_text, "inline": False})
 
     return embed
 
@@ -252,21 +202,11 @@ def send_to_discord(event, change_type, diffs=None):
     try:
         result = session.post(WEBHOOK_URL, json=embed, timeout=20)
     except requests.RequestException as e:
-        report_error(
-            "Discord Webhook Failure",
-            f"Failed to send event: {event['name']}",
-            str(e)
-        )
+        report_error("Discord Webhook Failure", f"Failed to send event: {event['name']}", str(e))
         return
 
-    if result.status_code in (200, 204):
-        print(f"Sent {change_type} event: {event['name']}", flush=True)
-    else:
-        report_error(
-            "Discord Webhook Error",
-            f"Discord rejected the event: {event['name']}",
-            result.text
-        )
+    if result.status_code not in (200, 204):
+        report_error("Discord Webhook Error", f"Discord rejected event: {event['name']}", result.text)
 
 
 def detect_changes(old_db, new_db):
@@ -301,6 +241,7 @@ def compare_events(old_event, new_event):
     }
 
     diffs = {}
+
     for key, label in fields_to_check.items():
         old_val = old_event.get(key)
         new_val = new_event.get(key)
@@ -323,12 +264,6 @@ def compare_events(old_event, new_event):
 
         if key == "description":
             if old_val != new_val:
-                print(
-                    f"[LOG] Event {new_event['id']} ({new_event['name']}) description changed:\n"
-                    f"OLD: {old_val}\n"
-                    f"NEW: {new_val}\n",
-                    flush=True,
-                )
                 diffs[label] = (old_val, new_val)
             continue
 
@@ -338,21 +273,16 @@ def compare_events(old_event, new_event):
     return diffs
 
 
+# ---------------------------------------------------------
+# ⭐ UPDATED HEARTBEAT FUNCTION (timestamp instead of uptime)
+# ---------------------------------------------------------
 def send_heartbeat():
     last_latency, avg_latency = get_latency_metrics()
 
-    if not HEARTBEAT_WEBHOOK_URL:
-        print("[HEARTBEAT] Bot is alive.", flush=True)
-        if last_latency is not None:
-            print(f"[HEARTBEAT] Last API latency: {last_latency:.2f}s", flush=True)
-        if avg_latency is not None:
-            print(f"[HEARTBEAT] 12h avg API latency: {avg_latency:.2f}s", flush=True)
-        return
-
     fields = [
         {
-            "name": "Uptime",
-            "value": f"{int((time.time() - START_TIME) / 3600)} hours",
+            "name": "Heartbeat Time",
+            "value": f"<t:{int(time.time())}:F>",
             "inline": False
         }
     ]
@@ -388,11 +318,7 @@ def send_heartbeat():
         session.post(HEARTBEAT_WEBHOOK_URL, json=embed, timeout=15)
         print("[HEARTBEAT] Sent heartbeat to Discord.", flush=True)
     except Exception as e:
-        report_error(
-            "Heartbeat Send Failure",
-            "Failed to send heartbeat message.",
-            str(e)
-        )
+        report_error("Heartbeat Send Failure", "Failed to send heartbeat message.", str(e))
 
 
 def main():
@@ -405,10 +331,7 @@ def main():
         print("[WARN] API unreachable at startup — using empty baseline.", flush=True)
         new_db = {}
 
-    print(f"[DEBUG] Loaded {len(old_db)} old events, {len(new_db)} new events", flush=True)
-
     if not old_db:
-        print("No database found. Creating baseline...", flush=True)
         save_db(new_db)
     else:
         changes = detect_changes(old_db, new_db)
@@ -423,35 +346,25 @@ def main():
         while True:
             time.sleep(300)
             now = time.time()
-            print(f"[{datetime.now(timezone.utc).isoformat()}] Checking for updates...", flush=True)
 
             old_db = load_db()
             new_db = fetch_events()
 
-            if new_db is None:
-                print("[WARN] API unreachable — keeping old data.", flush=True)
-                # still allow heartbeat even if API is down
-            else:
+            if new_db is not None:
                 changes = detect_changes(old_db, new_db)
-
                 if changes:
                     for change_type, event, diffs in changes:
                         send_to_discord(event, change_type, diffs)
                     save_db(new_db)
-                else:
-                    print("No changes detected.", flush=True)
 
-            # Heartbeat every 12 hours
             if now - last_heartbeat_time >= 1800:  # 30 minutes
                 send_heartbeat()
                 last_heartbeat_time = now
 
             if should_restart():
-                print("24 hours passed. Restarting bot...", flush=True)
                 os.execv(sys.executable, [sys.executable] + sys.argv)
 
     except KeyboardInterrupt:
-        print("\n[INFO] Bot stopped by user. Exiting cleanly.", flush=True)
         sys.exit(0)
 
 
@@ -459,9 +372,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        report_error(
-            "Fatal Bot Error",
-            "The bot crashed unexpectedly.",
-            f"{type(e).__name__}: {e}"
-        )
+        report_error("Fatal Bot Error", "The bot crashed unexpectedly.", f"{type(e).__name__}: {e}")
         raise
