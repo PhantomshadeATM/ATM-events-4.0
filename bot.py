@@ -442,7 +442,7 @@ def main():
                     print("No changes detected.", flush=True)
 
             # Heartbeat every 12 hours
-            if now - last_heartbeat_time >= 43200:  # 12 hours
+            if now - last_heartbeat_time >= 1800:  # 30 minutes
                 send_heartbeat()
                 last_heartbeat_time = now
 
