@@ -13,12 +13,34 @@ API_URL = "https://api.truckersmp.com/v2/vtc/49940/events/attending"
 WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_URL"]
 ERROR_WEBHOOK_URL = os.environ.get("DISCORD_ERROR_WEBHOOK_URL")
 HEARTBEAT_WEBHOOK_URL = os.environ.get("DISCORD_HEARTBEAT_WEBHOOK_URL")
+DAILY_SUMMARY_WEBHOOK_URL = os.environ.get("DISCORD_DAILY_SUMMARY_WEBHOOK_URL")
 
 DB_FILE = "events_db.json"
 START_TIME = time.time()
 
 API_LATENCIES = []
 LAST_API_LATENCY = None
+
+# Daily stats
+EVENTS_ADDED_TODAY = 0
+EVENTS_UPDATED_TODAY = 0
+EVENTS_REMOVED_TODAY = 0
+TOTAL_ACTIVE_EVENTS = 0
+
+API_CHECKS_TODAY = 0
+API_SUCCESSES_TODAY = 0
+
+HEARTBEATS_SENT_TODAY = 0
+ERRORS_REPORTED_TODAY = 0
+RESTARTS_TODAY = 0
+
+LAST_SUCCESSFUL_SYNC = None
+LAST_SUMMARY_DATE = None  # ISO date string, e.g. "2026-04-17"
+
+# ATM branding
+ATM_COLOR = 0x770202
+ATM_LOGO_URL = "https://cdn.imgpile.com/f/0PFveX5_xl.png"
+ATM_BANNER_URL = "https://cdn.imgpile.com/f/13NFeJc_xl.png"
 
 session = requests.Session()
 retries = Retry(
@@ -48,6 +70,9 @@ def save_db(data):
 
 
 def report_error(title, message, details=None):
+    global ERRORS_REPORTED_TODAY
+    ERRORS_REPORTED_TODAY += 1
+
     if not ERROR_WEBHOOK_URL:
         print(f"[ERROR] {title}: {message}", flush=True)
         if details:
@@ -86,7 +111,7 @@ def record_latency(latency):
     LAST_API_LATENCY = latency
     API_LATENCIES.append((now, latency))
 
-    cutoff = now - 43200
+    cutoff = now - 43200  # 12 hours
     API_LATENCIES = [(t, l) for (t, l) in API_LATENCIES if t >= cutoff]
 
 
@@ -98,7 +123,17 @@ def get_latency_metrics():
     return last_latency, avg_latency
 
 
+def get_latency_extremes():
+    if not API_LATENCIES:
+        return None, None
+    values = [l for _, l in API_LATENCIES]
+    return max(values), min(values)
+
+
 def fetch_events():
+    global API_CHECKS_TODAY, API_SUCCESSES_TODAY, LAST_SUCCESSFUL_SYNC
+
+    API_CHECKS_TODAY += 1
     start = time.time()
 
     try:
@@ -127,6 +162,9 @@ def fetch_events():
 
     events = data.get("response", [])
     print(f"[DEBUG] Got {len(events)} events", flush=True)
+
+    API_SUCCESSES_TODAY += 1
+    LAST_SUCCESSFUL_SYNC = datetime.now(timezone.utc)
 
     return {str(ev["id"]): ev for ev in events}
 
@@ -210,20 +248,26 @@ def send_to_discord(event, change_type, diffs=None):
 
 
 def detect_changes(old_db, new_db):
+    global TOTAL_ACTIVE_EVENTS, EVENTS_ADDED_TODAY, EVENTS_UPDATED_TODAY, EVENTS_REMOVED_TODAY
+
     changes = []
 
     for event_id, event in new_db.items():
         if event_id not in old_db:
             changes.append(("created", event, None))
+            EVENTS_ADDED_TODAY += 1
         else:
             diffs = compare_events(old_db[event_id], event)
             if diffs:
                 changes.append(("updated", event, diffs))
+                EVENTS_UPDATED_TODAY += 1
 
     for event_id, event in old_db.items():
         if event_id not in new_db:
             changes.append(("removed", event, None))
+            EVENTS_REMOVED_TODAY += 1
 
+    TOTAL_ACTIVE_EVENTS = len(new_db)
     return changes
 
 
@@ -274,9 +318,11 @@ def compare_events(old_event, new_event):
 
 
 # ---------------------------------------------------------
-# ⭐ UPDATED HEARTBEAT FUNCTION (timestamp instead of uptime)
+# HEARTBEAT FUNCTION (timestamp instead of uptime)
 # ---------------------------------------------------------
 def send_heartbeat():
+    global HEARTBEATS_SENT_TODAY
+
     last_latency, avg_latency = get_latency_metrics()
 
     fields = [
@@ -306,7 +352,7 @@ def send_heartbeat():
         "embeds": [
             {
                 "title": "💓 Heartbeat",
-                "color": 770202,
+                "color": 0x3498DB,
                 "description": "The bot is running normally.",
                 "fields": fields,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -316,13 +362,161 @@ def send_heartbeat():
 
     try:
         session.post(HEARTBEAT_WEBHOOK_URL, json=embed, timeout=15)
+        HEARTBEATS_SENT_TODAY += 1
         print("[HEARTBEAT] Sent heartbeat to Discord.", flush=True)
     except Exception as e:
         report_error("Heartbeat Send Failure", "Failed to send heartbeat message.", str(e))
 
 
+# ---------------------------------------------------------
+# DAILY SUMMARY (ATM-branded, 00:00 UTC, separate webhook)
+# ---------------------------------------------------------
+def send_daily_summary():
+    if not DAILY_SUMMARY_WEBHOOK_URL:
+        print("[DAILY SUMMARY] No DAILY_SUMMARY_WEBHOOK_URL set, skipping.", flush=True)
+        return
+
+    now_utc = datetime.now(timezone.utc)
+    unix_now = int(now_utc.timestamp())
+
+    last_latency, avg_latency = get_latency_metrics()
+    max_latency, min_latency = get_latency_extremes()
+
+    if API_CHECKS_TODAY > 0:
+        api_uptime = (API_SUCCESSES_TODAY / API_CHECKS_TODAY) * 100
+    else:
+        api_uptime = None
+
+    if LAST_SUCCESSFUL_SYNC is not None:
+        last_sync_unix = int(LAST_SUCCESSFUL_SYNC.timestamp())
+        last_sync_value = f"<t:{last_sync_unix}:R>"
+    else:
+        last_sync_value = "No successful sync yet"
+
+    api_health_lines = []
+    if api_uptime is not None:
+        api_health_lines.append(f"• Uptime: {api_uptime:.1f}%")
+    else:
+        api_health_lines.append("• Uptime: N/A")
+
+    if avg_latency is not None:
+        api_health_lines.append(f"• Avg latency: {avg_latency:.2f}s")
+    else:
+        api_health_lines.append("• Avg latency: N/A")
+
+    if max_latency is not None:
+        api_health_lines.append(f"• Max latency: {max_latency:.2f}s")
+    else:
+        api_health_lines.append("• Max latency: N/A")
+
+    if min_latency is not None:
+        api_health_lines.append(f"• Min latency: {min_latency:.2f}s")
+    else:
+        api_health_lines.append("• Min latency: N/A")
+
+    if API_SUCCESSES_TODAY == 0 and API_CHECKS_TODAY > 0:
+        api_status = "🔴 Down / Unstable"
+    elif API_SUCCESSES_TODAY > 0:
+        api_status = "🟢 Stable"
+    else:
+        api_status = "⚪ No data"
+
+    api_health_lines.append(f"• Status: {api_status}")
+
+    event_activity_lines = [
+        f"• Added: {EVENTS_ADDED_TODAY}",
+        f"• Updated: {EVENTS_UPDATED_TODAY}",
+        f"• Removed: {EVENTS_REMOVED_TODAY}",
+        f"• Total active events: {TOTAL_ACTIVE_EVENTS}",
+    ]
+
+    vtc_highlights_lines = [
+        f"• New ATM convoys: {EVENTS_ADDED_TODAY}",
+        f"• Updated ATM convoys: {EVENTS_UPDATED_TODAY}",
+        f"• Removed ATM convoys: {EVENTS_REMOVED_TODAY}",
+    ]
+
+    bot_health_lines = [
+        f"• Restarts today: {RESTARTS_TODAY}",
+        f"• Heartbeats sent: {HEARTBEATS_SENT_TODAY}",
+        f"• Errors reported: {ERRORS_REPORTED_TODAY}",
+    ]
+
+    embed = {
+        "username": "At The Mile Logistics — Daily Summary",
+        "embeds": [
+            {
+                "title": "📊 At The Mile Logistics — Daily Summary",
+                "color": ATM_COLOR,
+                "description": f"Generated at: <t:{unix_now}:F>",
+                "fields": [
+                    {
+                        "name": "🟥 API Health",
+                        "value": "\n".join(api_health_lines),
+                        "inline": False
+                    },
+                    {
+                        "name": "🚚 Event Activity",
+                        "value": "\n".join(event_activity_lines),
+                        "inline": False
+                    },
+                    {
+                        "name": "🏢 ATM VTC Highlights",
+                        "value": "\n".join(vtc_highlights_lines),
+                        "inline": False
+                    },
+                    {
+                        "name": "🧠 Bot Health",
+                        "value": "\n".join(bot_health_lines),
+                        "inline": False
+                    },
+                    {
+                        "name": "🕒 Last successful sync",
+                        "value": last_sync_value,
+                        "inline": False
+                    },
+                ],
+                "thumbnail": {"url": ATM_LOGO_URL},
+                "image": {"url": ATM_BANNER_URL},
+                "timestamp": now_utc.isoformat(),
+                "footer": {"text": "At The Mile Logistics — Going the Distance"},
+            }
+        ],
+    }
+
+    try:
+        session.post(DAILY_SUMMARY_WEBHOOK_URL, json=embed, timeout=20)
+        print("[DAILY SUMMARY] Sent daily summary to Discord.", flush=True)
+    except Exception as e:
+        report_error("Daily Summary Failure", "Failed to send daily summary.", str(e))
+
+
+def reset_daily_counters():
+    global EVENTS_ADDED_TODAY, EVENTS_UPDATED_TODAY, EVENTS_REMOVED_TODAY
+    global API_CHECKS_TODAY, API_SUCCESSES_TODAY
+    global HEARTBEATS_SENT_TODAY, ERRORS_REPORTED_TODAY
+    global RESTARTS_TODAY
+
+    EVENTS_ADDED_TODAY = 0
+    EVENTS_UPDATED_TODAY = 0
+    EVENTS_REMOVED_TODAY = 0
+
+    API_CHECKS_TODAY = 0
+    API_SUCCESSES_TODAY = 0
+
+    HEARTBEATS_SENT_TODAY = 0
+    ERRORS_REPORTED_TODAY = 0
+
+    RESTARTS_TODAY = 0
+
+
 def main():
+    global LAST_SUMMARY_DATE, RESTARTS_TODAY
+
     print("TruckersMP Event Bot started...", flush=True)
+
+    now_utc = datetime.now(timezone.utc)
+    LAST_SUMMARY_DATE = now_utc.date().isoformat()
 
     old_db = load_db()
     new_db = fetch_events()
@@ -344,8 +538,10 @@ def main():
 
     try:
         while True:
-            time.sleep(300)
+            time.sleep(60)  # 1-minute loop for precise 00:00 UTC
+
             now = time.time()
+            now_utc = datetime.now(timezone.utc)
 
             old_db = load_db()
             new_db = fetch_events()
@@ -361,7 +557,14 @@ def main():
                 send_heartbeat()
                 last_heartbeat_time = now
 
+            today_iso = now_utc.date().isoformat()
+            if now_utc.hour == 0 and now_utc.minute == 0 and LAST_SUMMARY_DATE != today_iso:
+                send_daily_summary()
+                LAST_SUMMARY_DATE = today_iso
+                reset_daily_counters()
+
             if should_restart():
+                RESTARTS_TODAY += 1
                 os.execv(sys.executable, [sys.executable] + sys.argv)
 
     except KeyboardInterrupt:
