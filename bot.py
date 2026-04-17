@@ -317,11 +317,11 @@ def compare_events(old_event, new_event):
     return diffs
 
 
-# ---------------------------------------------------------
-# HEARTBEAT FUNCTION (timestamp instead of uptime)
-# ---------------------------------------------------------
 def send_heartbeat():
     global HEARTBEATS_SENT_TODAY
+
+    if not HEARTBEAT_WEBHOOK_URL:
+        return
 
     last_latency, avg_latency = get_latency_metrics()
 
@@ -368,9 +368,6 @@ def send_heartbeat():
         report_error("Heartbeat Send Failure", "Failed to send heartbeat message.", str(e))
 
 
-# ---------------------------------------------------------
-# DAILY SUMMARY (ATM-branded, 00:00 UTC, separate webhook)
-# ---------------------------------------------------------
 def send_daily_summary():
     if not DAILY_SUMMARY_WEBHOOK_URL:
         print("[DAILY SUMMARY] No DAILY_SUMMARY_WEBHOOK_URL set, skipping.", flush=True)
@@ -510,10 +507,71 @@ def reset_daily_counters():
     RESTARTS_TODAY = 0
 
 
+def run_startup_self_test():
+    """
+    Runs a full system diagnostic when the bot starts.
+    Sends an ATM‑branded embed to the Daily Summary webhook.
+    """
+
+    now_utc = datetime.now(timezone.utc)
+    unix_now = int(now_utc.timestamp())
+
+    checks = {
+        "Discord Webhook": WEBHOOK_URL is not None,
+        "Error Webhook": ERROR_WEBHOOK_URL is not None,
+        "Heartbeat Webhook": HEARTBEAT_WEBHOOK_URL is not None,
+        "Daily Summary Webhook": DAILY_SUMMARY_WEBHOOK_URL is not None,
+        "Branding Logo URL": ATM_LOGO_URL is not None,
+        "Branding Banner URL": ATM_BANNER_URL is not None,
+        "Database File": os.path.exists(DB_FILE),
+    }
+
+    try:
+        api_test = session.get(API_URL, timeout=10)
+        checks["TruckersMP API"] = api_test.status_code == 200
+    except Exception:
+        checks["TruckersMP API"] = False
+
+    def status_icon(ok):
+        return "🟢 OK" if ok else "🔴 FAILED"
+
+    results_text = "\n".join([f"• **{name}:** {status_icon(ok)}" for name, ok in checks.items()])
+
+    embed = {
+        "username": "At The Mile Logistics — Startup Self‑Test",
+        "embeds": [
+            {
+                "title": "🧪 ATM Bot Startup Self‑Test",
+                "color": ATM_COLOR,
+                "description": (
+                    "The bot has started and completed a full system diagnostic.\n\n"
+                    f"{results_text}\n\n"
+                    f"**Startup Time:** <t:{unix_now}:F>"
+                ),
+                "thumbnail": {"url": ATM_LOGO_URL},
+                "image": {"url": ATM_BANNER_URL},
+                "footer": {"text": "At The Mile Logistics — Going the Distance"},
+                "timestamp": now_utc.isoformat(),
+            }
+        ],
+    }
+
+    try:
+        if DAILY_SUMMARY_WEBHOOK_URL:
+            session.post(DAILY_SUMMARY_WEBHOOK_URL, json=embed, timeout=15)
+            print("[SELF‑TEST] Startup self‑test sent.", flush=True)
+        else:
+            print("[SELF‑TEST] DAILY_SUMMARY_WEBHOOK_URL not set, self‑test not sent.", flush=True)
+    except Exception as e:
+        print(f"[SELF‑TEST ERROR] Failed to send startup test: {e}", flush=True)
+
+
 def main():
     global LAST_SUMMARY_DATE, RESTARTS_TODAY
 
     print("TruckersMP Event Bot started...", flush=True)
+
+    run_startup_self_test()
 
     now_utc = datetime.now(timezone.utc)
     LAST_SUMMARY_DATE = now_utc.date().isoformat()
