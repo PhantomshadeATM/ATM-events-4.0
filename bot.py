@@ -4,8 +4,13 @@ import json
 import os
 import sys
 import io
+import logging
+import threading
 from datetime import datetime, timezone
 from requests.adapters import HTTPAdapter, Retry
+from flask import Flask, jsonify
+from collections
+import deque
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
@@ -40,6 +45,29 @@ ATM_COLOR = 0x770202
 ATM_LOGO_URL = "https://cdn.imgpile.com/f/0PFveX5_xl.png"
 ATM_BANNER_URL = "https://cdn.imgpile.com/f/13NFeJc_xl.png"
 
+# ---------- Logging setup ----------
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("ATM-Bot")
+
+LOG_BUFFER = deque(maxlen=200)
+
+
+class LogCaptureHandler(logging.Handler):
+    def emit(self, record):
+        LOG_BUFFER.append(self.format(record))
+
+
+capture_handler = LogCaptureHandler()
+capture_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+logger.addHandler(capture_handler)
+
+# ---------- HTTP session ----------
+
 session = requests.Session()
 retries = Retry(
     total=5,
@@ -54,7 +82,7 @@ def ensure_database_exists():
     if not os.path.exists(DB_FILE):
         with open(DB_FILE, "w", encoding="utf-8") as f:
             json.dump({}, f, indent=2)
-        print("[INIT] Created empty events_db.json", flush=True)
+        logger.info("Created empty events_db.json")
 
 
 def should_restart():
@@ -65,23 +93,29 @@ def load_db():
     try:
         with open(DB_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    except:
+    except Exception as e:
+        logger.error(f"Failed to load DB: {e}")
         return {}
 
 
 def save_db(data):
-    with open(DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    try:
+        with open(DB_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        logger.info("Database saved")
+    except Exception as e:
+        logger.error(f"Failed to save DB: {e}")
 
 
 def report_error(title, message, details=None):
     global ERRORS_REPORTED_TODAY
     ERRORS_REPORTED_TODAY += 1
 
+    logger.error(f"{title}: {message}")
+
     if not ERROR_WEBHOOK_URL:
-        print(f"[ERROR] {title}: {message}", flush=True)
         if details:
-            print(details, flush=True)
+            logger.error(details)
         return
 
     embed = {
@@ -107,7 +141,7 @@ def report_error(title, message, details=None):
     try:
         session.post(ERROR_WEBHOOK_URL, json=embed, timeout=15)
     except Exception as e:
-        print(f"[ERROR] Failed to send error report: {e}", flush=True)
+        logger.error(f"Failed to send error report: {e}")
 
 
 def record_latency(latency):
@@ -138,6 +172,7 @@ def fetch_events():
 
     API_CHECKS_TODAY += 1
     start = time.time()
+    logger.info("Fetching events from TruckersMP API")
 
     try:
         response = session.get(API_URL, timeout=25)
@@ -147,6 +182,7 @@ def fetch_events():
 
     elapsed = time.time() - start
     record_latency(elapsed)
+    logger.info(f"API response time: {elapsed:.2f}s")
 
     if response.status_code != 200:
         report_error("API HTTP Error", f"Status {response.status_code}", response.text[:1500])
@@ -154,7 +190,7 @@ def fetch_events():
 
     try:
         data = response.json()
-    except:
+    except Exception:
         report_error("Invalid JSON Response", "Malformed JSON.", response.text[:1000])
         return None
 
@@ -165,6 +201,7 @@ def fetch_events():
     events = data.get("response", [])
     API_SUCCESSES_TODAY += 1
     LAST_SUCCESSFUL_SYNC = datetime.now(timezone.utc)
+    logger.info(f"Retrieved {len(events)} events")
 
     return {str(ev["id"]): ev for ev in events}
 
@@ -173,7 +210,7 @@ def discord_timestamp(dt_str, style="F"):
     try:
         dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
         return f"<t:{int(dt.timestamp())}:{style}>"
-    except:
+    except Exception:
         return dt_str
 
 
@@ -216,6 +253,7 @@ def compare_events(old_event, new_event):
             diffs[label] = (old_val, new_val)
 
     return diffs
+
 
 def build_embed(event, change_type="created", diffs=None):
     meetup_time = discord_timestamp(event.get("meetup_at"), "F") if event.get("meetup_at") else "Not specified"
@@ -272,7 +310,6 @@ def build_embed(event, change_type="created", diffs=None):
 
     return embed
 
-
 def send_to_discord(event, change_type, diffs=None):
     embed = build_embed(event, change_type, diffs)
 
@@ -284,6 +321,8 @@ def send_to_discord(event, change_type, diffs=None):
 
     if result.status_code not in (200, 204):
         report_error("Discord Webhook Error", f"Discord rejected event: {event['name']}", result.text)
+    else:
+        logger.info(f"Sent {change_type} notification for event: {event['name']}")
 
 
 def detect_changes(old_db, new_db):
@@ -307,6 +346,11 @@ def detect_changes(old_db, new_db):
             EVENTS_REMOVED_TODAY += 1
 
     TOTAL_ACTIVE_EVENTS = len(new_db)
+    logger.info(
+        f"Change detection complete — added: {EVENTS_ADDED_TODAY}, "
+        f"updated: {EVENTS_UPDATED_TODAY}, removed: {EVENTS_REMOVED_TODAY}, "
+        f"total active: {TOTAL_ACTIVE_EVENTS}"
+    )
     return changes
 
 
@@ -344,6 +388,7 @@ def send_heartbeat():
     try:
         session.post(HEARTBEAT_WEBHOOK_URL, json=embed, timeout=15)
         HEARTBEATS_SENT_TODAY += 1
+        logger.info("Heartbeat sent")
     except Exception as e:
         report_error("Heartbeat Send Failure", "Failed to send heartbeat message.", str(e))
 
@@ -442,6 +487,7 @@ def send_daily_summary():
 
     try:
         session.post(DAILY_SUMMARY_WEBHOOK_URL, json=embed, timeout=20)
+        logger.info("Daily summary sent")
     except Exception as e:
         report_error("Daily Summary Failure", "Failed to send daily summary.", str(e))
 
@@ -463,6 +509,7 @@ def reset_daily_counters():
     ERRORS_REPORTED_TODAY = 0
 
     RESTARTS_TODAY = 0
+    logger.info("Daily counters reset")
 
 
 def run_startup_self_test():
@@ -482,7 +529,7 @@ def run_startup_self_test():
     try:
         api_test = session.get(API_URL, timeout=10)
         checks["TruckersMP API"] = api_test.status_code == 200
-    except:
+    except Exception:
         checks["TruckersMP API"] = False
 
     def status_icon(ok):
@@ -512,14 +559,44 @@ def run_startup_self_test():
     try:
         if DAILY_SUMMARY_WEBHOOK_URL:
             session.post(DAILY_SUMMARY_WEBHOOK_URL, json=embed, timeout=15)
+        logger.info("Startup self-test completed")
     except Exception as e:
-        print(f"[SELF‑TEST ERROR] Failed to send startup test: {e}", flush=True)
+        logger.error(f"Failed to send startup self-test: {e}")
 
+
+# ---------- Flask debug server ----------
+
+app = Flask(__name__)
+
+
+@app.route("/debug/db", methods=["GET"])
+def debug_db():
+    try:
+        data = load_db()
+        return jsonify(data), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/debug/logs", methods=["GET"])
+def debug_logs():
+    try:
+        return jsonify(list(LOG_BUFFER)), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+def start_debug_server():
+    logger.info("Starting HTTP debug server on port 8080")
+    app.run(host="0.0.0.0", port=8080)
+
+
+# ---------- Main loop ----------
 
 def main():
     global LAST_SUMMARY_DATE, RESTARTS_TODAY
 
-    print("TruckersMP Event Bot started...", flush=True)
+    logger.info("TruckersMP Event Bot started")
 
     ensure_database_exists()
     run_startup_self_test()
@@ -531,16 +608,17 @@ def main():
     new_db = fetch_events()
 
     if new_db is None:
-        print("[WARN] API unreachable at startup — using empty baseline.", flush=True)
+        logger.warning("API unreachable at startup — using empty baseline")
         new_db = {}
 
     if not old_db:
         save_db(new_db)
     else:
         changes = detect_changes(old_db, new_db)
-        for change_type, event, diffs in changes:
-            send_to_discord(event, change_type, diffs)
         if changes:
+            logger.info(f"Applying {len(changes)} startup change(s)")
+            for change_type, event, diffs in changes:
+                send_to_discord(event, change_type, diffs)
             save_db(new_db)
 
     last_heartbeat_time = START_TIME
@@ -551,6 +629,7 @@ def main():
 
             now = time.time()
             now_utc = datetime.now(timezone.utc)
+            logger.info("Loop tick — checking for updates")
 
             old_db = load_db()
             new_db = fetch_events()
@@ -558,9 +637,14 @@ def main():
             if new_db is not None:
                 changes = detect_changes(old_db, new_db)
                 if changes:
+                    logger.info(f"Detected {len(changes)} change(s)")
                     for change_type, event, diffs in changes:
                         send_to_discord(event, change_type, diffs)
                     save_db(new_db)
+                else:
+                    logger.info("No changes detected")
+            else:
+                logger.warning("API returned no data this loop")
 
             if now - last_heartbeat_time >= 1800:
                 send_heartbeat()
@@ -574,15 +658,21 @@ def main():
 
             if should_restart():
                 RESTARTS_TODAY += 1
+                logger.warning("Restarting bot due to 24h uptime limit")
                 os.execv(sys.executable, [sys.executable] + sys.argv)
 
     except KeyboardInterrupt:
+        logger.info("Bot stopped via KeyboardInterrupt")
         sys.exit(0)
 
 
 if __name__ == "__main__":
+    threading.Thread(target=start_debug_server, daemon=True).start()
+    logger.info("HTTP debug server thread started")
+
     try:
         main()
     except Exception as e:
+        logger.critical(f"Fatal bot error: {e}")
         report_error("Fatal Bot Error", "The bot crashed unexpectedly.", f"{type(e).__name__}: {e}")
         raise
