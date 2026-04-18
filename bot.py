@@ -126,7 +126,7 @@ def report_error(title, message, details=None):
         return
 
     embed = {
-        "username": "TruckersMP Events Bot — Error Reporter",
+        "username": "Events Bot — Error Reporter",
         "embeds": [
             {
                 "title": f"⚠️ {title}",
@@ -373,22 +373,34 @@ def send_heartbeat():
     last_latency, avg_latency = get_latency_metrics()
 
     fields = [
-        {"name": "Heartbeat Time", "value": f"<t:{int(time.time())}:F>", "inline": False}
+        {
+            "name": "Heartbeat Time",
+            "value": f"<t:{int(time.time())}:F>",
+            "inline": False
+        }
     ]
 
     if last_latency is not None:
-        fields.append({"name": "Last API latency", "value": f"{last_latency:.2f} seconds", "inline": True})
+        fields.append({
+            "name": "Last API latency",
+            "value": f"{last_latency:.2f} seconds",
+            "inline": True
+        })
 
     if avg_latency is not None:
-        fields.append({"name": "12h average API latency", "value": f"{avg_latency:.2f} seconds", "inline": True})
+        fields.append({
+            "name": "12h average API latency",
+            "value": f"{avg_latency:.2f} seconds",
+            "inline": True
+        })
 
     embed = {
         "username": "TruckersMP Events Bot — Heartbeat",
         "embeds": [
             {
-                "title": "💓 Heartbeat",
+                "title": "💓 Bot checking",
                 "color": 0x770202,
-                "description": "The bot is running normally.",
+                "description": "Just checking in. It works",
                 "fields": fields,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
@@ -400,9 +412,40 @@ def send_heartbeat():
         HEARTBEATS_SENT_TODAY += 1
         logger.info("Heartbeat sent")
     except Exception as e:
-        report_error("Heartbeat Send Failure", "Failed to send heartbeat message.", str(e))
+        report_error(
+            "Heartbeat Send Failure",
+            "Failed to send heartbeat message.",
+            str(e)
+        )
 
+def heartbeat_scheduler():
+    while True:
+        now = datetime.now(timezone.utc)
 
+        # Trigger heartbeat exactly at HH:00:00–HH:00:04
+        if now.minute == 0 and now.second < 5:
+            send_heartbeat()
+            time.sleep(5)  # prevents duplicate sends
+
+        time.sleep(1)
+
+def daily_summary_scheduler():
+    global LAST_SUMMARY_DATE
+
+    while True:
+        now = datetime.now(timezone.utc)
+        current_date = now.date()
+
+        # Fire exactly at 00:00:00–00:00:04 UTC
+        if now.hour == 0 and now.minute == 0 and now.second < 5:
+            if LAST_SUMMARY_DATE != current_date:
+                send_daily_summary()
+                reset_daily_counters()
+                LAST_SUMMARY_DATE = current_date
+                time.sleep(5)  # prevent duplicate sends
+
+        time.sleep(1)
+    
 def send_daily_summary():
     if not DAILY_SUMMARY_WEBHOOK_URL:
         return
@@ -521,6 +564,100 @@ def reset_daily_counters():
     RESTARTS_TODAY = 0
     logger.info("Daily counters reset")
 
+def restart_scheduler():
+    global RESTARTS_TODAY, START_TIME
+
+    while True:
+        now = datetime.now(timezone.utc)
+
+        # Fire restart exactly at 00:00:00–00:00:04 UTC
+        if now.hour == 0 and now.minute == 0 and now.second < 5:
+            RESTARTS_TODAY += 1
+            logger.warning("Scheduled daily restart triggered at 00:00 UTC")
+
+            # Report restart to Discord (optional)
+            report_error(
+                "Scheduled Restart",
+                "Bot is restarting as part of the daily UTC reset."
+            )
+
+            # Hard exit — Railway or systemd will restart the bot
+            os._exit(1)
+
+        time.sleep(1)
+
+def send_restart_countdown():
+    now_utc = datetime.now(timezone.utc)
+    unix_now = int(now_utc.timestamp())
+
+    embed = {
+        "username": "ATM Bot — Restart Notice",
+        "embeds": [
+            {
+                "title": "⏳ Scheduled Restart Incoming",
+                "color": 0xE67E22,
+                "description": (
+                    "The bot will restart in **5 minutes** as part of the daily UTC reset.\n"
+                    "This ensures clean memory, accurate counters, and stable performance."
+                ),
+                "fields": [
+                    {"name": "Restart Time", "value": "<t:{}:F>".format(unix_now + 300), "inline": False},
+                    {"name": "Reason", "value": "Daily scheduled maintenance restart", "inline": False},
+                ],
+                "timestamp": now_utc.isoformat(),
+            }
+        ],
+    }
+
+    try:
+        session.post(ERROR_WEBHOOK_URL or WEBHOOK_URL, json=embed, timeout=15)
+        logger.info("Restart countdown embed sent")
+    except Exception as e:
+        report_error("Restart Countdown Failure", "Failed to send restart countdown embed.", str(e))
+        
+def restart_countdown_scheduler():
+    while True:
+        now = datetime.now(timezone.utc)
+
+        # Fire countdown at 23:55:00–23:55:04 UTC
+        if now.hour == 23 and now.minute == 55 and now.second < 5:
+            send_restart_countdown()
+            time.sleep(5)  # prevent duplicates
+
+        time.sleep(1)
+        
+def send_restart_completed():
+    now_utc = datetime.now(timezone.utc)
+    unix_now = int(now_utc.timestamp())
+
+    embed = {
+        "username": "ATM Bot — Restart Complete",
+        "embeds": [
+            {
+                "title": "✅ Restart Completed Successfully",
+                "color": 0x2ECC71,
+                "description": (
+                    "The bot has restarted as part of the daily UTC maintenance cycle.\n"
+                    "All systems are back online and counters have been reset."
+                ),
+                "fields": [
+                    {"name": "Restart Time", "value": f"<t:{unix_now}:F>", "inline": False},
+                    {"name": "Status", "value": "🟢 Operational", "inline": True},
+                ],
+                "timestamp": now_utc.isoformat(),
+            }
+        ],
+    }
+
+    try:
+        session.post(ERROR_WEBHOOK_URL or WEBHOOK_URL, json=embed, timeout=15)
+        logger.info("Restart completed embed sent")
+    except Exception as e:
+        report_error(
+            "Restart Completed Embed Failure",
+            "Failed to send restart completion embed.",
+            str(e)
+        )
 
 def run_startup_self_test():
     now_utc = datetime.now(timezone.utc)
@@ -614,7 +751,6 @@ def filter_events_by_date(events, date_str):
 app = Flask(__name__)
 
 
-# UPDATED /debug/db WITH FILTERING UI
 @app.route("/debug/db", methods=["GET"])
 def debug_db():
     try:
@@ -991,7 +1127,7 @@ def main():
                 logger.warning("API returned no data this loop")
 
             # Heartbeat every 30 minutes
-            if now - last_heartbeat_time >= 1800:
+            if now - last_heartbeat_time >= 3600:
                 send_heartbeat()
                 last_heartbeat_time = now
 
@@ -1017,12 +1153,46 @@ if __name__ == "__main__":
 
     # Start Flask debug server (threaded)
     import threading
-    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=8080), daemon=True).start()
+    threading.Thread(
+        target=lambda: app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080))),
+        daemon=True
+    ).start()
+
+    # Send restart completed embed on startup
+    send_restart_completed()
+
+    # Start hourly heartbeat scheduler
+    threading.Thread(
+        target=heartbeat_scheduler,
+        daemon=True
+    ).start()
+
+    # Start daily summary scheduler (fires at 00:00 UTC)
+    threading.Thread(
+        target=daily_summary_scheduler,
+        daemon=True
+    ).start()
+
+    # Start restart countdown scheduler (fires at 23:55 UTC)
+    threading.Thread(
+        target=restart_countdown_scheduler,
+        daemon=True
+    ).start()
+
+    # Start daily restart scheduler (fires at 00:00 UTC)
+    threading.Thread(
+        target=restart_scheduler,
+        daemon=True
+    ).start()
 
     logger.info("Starting main monitoring loop")
     try:
         main()
     except Exception as e:
         logger.critical(f"Fatal bot error: {e}")
-        report_error("Fatal Bot Error", "The bot crashed unexpectedly.", f"{type(e).__name__}: {e}")
+        report_error(
+            "Fatal Bot Error",
+            "The bot crashed unexpectedly.",
+            f"{type(e).__name__}: {e}"
+        )
         raise
