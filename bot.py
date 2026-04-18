@@ -1126,11 +1126,6 @@ def main():
             else:
                 logger.warning("API returned no data this loop")
 
-            # Heartbeat every 30 minutes
-            if now - last_heartbeat_time >= 3600:
-                send_heartbeat()
-                last_heartbeat_time = now
-
             # Daily summary at midnight UTC
             today_iso = now_utc.date().isoformat()
             if now_utc.hour == 0 and now_utc.minute == 0 and LAST_SUMMARY_DATE != today_iso:
