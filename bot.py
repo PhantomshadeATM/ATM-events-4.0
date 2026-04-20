@@ -13,6 +13,9 @@ from collections import deque
 import discord
 from discord import app_commands
 
+RESTART_IN_PROGRESS = False
+HAS_JUST_RESTARTED = False
+
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
 API_URL = "https://api.truckersmp.com/v2/vtc/49940/events/attending"
@@ -422,12 +425,11 @@ def heartbeat_scheduler():
     while True:
         now = datetime.now(timezone.utc)
 
-        # Trigger heartbeat exactly at HH:00:00–HH:00:04
-        if now.minute == 0 and now.second < 5:
-            send_heartbeat()
-            time.sleep(5)  # prevents duplicate sends
+        # Heartbeat every 12 hours (12:00 UTC only)
+        if now.hour == 12 and now.minute == 0:
+            send_heartbeat_embed()
 
-        time.sleep(1)
+        time.sleep(30)
 
 def daily_summary_scheduler():
     global LAST_SUMMARY_DATE
@@ -565,26 +567,18 @@ def reset_daily_counters():
     logger.info("Daily counters reset")
 
 def restart_scheduler():
-    global RESTARTS_TODAY, START_TIME
+    global RESTART_IN_PROGRESS, HAS_JUST_RESTARTED
 
     while True:
         now = datetime.now(timezone.utc)
 
-        # Fire restart exactly at 00:00:00–00:00:04 UTC
-        if now.hour == 0 and now.minute == 0 and now.second < 5:
-            RESTARTS_TODAY += 1
-            logger.warning("Scheduled daily restart triggered at 00:00 UTC")
-
-            # Report restart to Discord (optional)
-            report_error(
-                "Scheduled Restart",
-                "Bot is restarting as part of the daily UTC reset."
-            )
-
-            # Hard exit — Railway or systemd will restart the bot
+        # 00:00 UTC — restart ONCE
+        if now.hour == 0 and now.minute == 0 and RESTART_IN_PROGRESS:
+            HAS_JUST_RESTARTED = True
+            send_restart_notice_embed()
             os._exit(1)
 
-        time.sleep(1)
+        time.sleep(30)
 
 def send_restart_countdown():
     now_utc = datetime.now(timezone.utc)
@@ -616,16 +610,18 @@ def send_restart_countdown():
         report_error("Restart Countdown Failure", "Failed to send restart countdown embed.", str(e))
         
 def restart_countdown_scheduler():
+    global RESTART_IN_PROGRESS
+
     while True:
         now = datetime.now(timezone.utc)
 
-        # Fire countdown at 23:55:00–23:55:04 UTC
-        if now.hour == 23 and now.minute == 55 and now.second < 5:
-            send_restart_countdown()
-            time.sleep(5)  # prevent duplicates
+        # 23:55 UTC — send countdown ONCE
+        if now.hour == 23 and now.minute == 55 and not RESTART_IN_PROGRESS:
+            RESTART_IN_PROGRESS = True
+            send_restart_countdown_embed()
 
-        time.sleep(1)
-        
+        time.sleep(30)
+
 def send_restart_completed():
     now_utc = datetime.now(timezone.utc)
     unix_now = int(now_utc.timestamp())
@@ -996,8 +992,32 @@ tree = app_commands.CommandTree(discord_bot)
 
 @discord_bot.event
 async def on_ready():
+    global HAS_JUST_RESTARTED, RESTART_IN_PROGRESS
+
     await tree.sync()
     logger.info(f"Slash commands synced as {discord_bot.user}")
+
+    # If bot restarted, send restart-complete embeds ONCE
+    if HAS_JUST_RESTARTED:
+        channel = discord_bot.get_channel(YOUR_CHANNEL_ID)
+
+        embed1 = discord.Embed(
+            title="✅ Restart Completed Successfully",
+            description="The bot has restarted as part of the daily UTC maintenance cycle.",
+            color=0x2ECC71
+        )
+
+        embed2 = discord.Embed(
+            title="🧪 Startup Self-Test",
+            description="All systems are operational.",
+            color=0x3498DB
+        )
+
+        await channel.send(embeds=[embed1, embed2])
+
+        # Reset flags
+        HAS_JUST_RESTARTED = False
+        RESTART_IN_PROGRESS = False
 
 
 @tree.command(name="search_keyword", description="Search ATM events by keyword")
