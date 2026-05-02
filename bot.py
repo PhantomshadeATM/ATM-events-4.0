@@ -47,6 +47,13 @@ ATM_COLOR = 0x770202
 ATM_LOGO_URL = "https://cdn.imgpile.com/f/0PFveX5_xl.png"
 ATM_BANNER_URL = "https://cdn.imgpile.com/f/13NFeJc_xl.png"
 
+KEYWORD_FILTERS = {
+    "convoy": True,
+    "training": False,
+    "atm": True,
+    "special": False,
+}
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -56,9 +63,11 @@ logger = logging.getLogger("ATM-Bot")
 
 LOG_BUFFER = deque(maxlen=200)
 
+
 class LogCaptureHandler(logging.Handler):
     def emit(self, record):
         LOG_BUFFER.append(self.format(record))
+
 
 capture_handler = LogCaptureHandler()
 capture_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
@@ -73,11 +82,13 @@ retries = Retry(
 )
 session.mount("https://", HTTPAdapter(max_retries=retries))
 
+
 def ensure_database_exists():
     if not os.path.exists(DB_FILE):
         with open(DB_FILE, "w", encoding="utf-8") as f:
             json.dump({}, f, indent=2)
         logger.info("Created empty events_db.json")
+
 
 def load_db():
     try:
@@ -87,6 +98,7 @@ def load_db():
         logger.error(f"Failed to load DB: {e}")
         return {}
 
+
 def save_db(data):
     try:
         with open(DB_FILE, "w", encoding="utf-8") as f:
@@ -94,6 +106,7 @@ def save_db(data):
         logger.info("Database saved")
     except Exception as e:
         logger.error(f"Failed to save DB: {e}")
+
 
 def report_error(title, message, details=None):
     global ERRORS_REPORTED_TODAY
@@ -133,12 +146,14 @@ def report_error(title, message, details=None):
     except Exception as e:
         logger.error(f"Failed to send error report: {e}")
 
+
 def record_latency(latency):
     global LAST_API_LATENCY, API_LATENCIES
     now = time.time()
     LAST_API_LATENCY = latency
     API_LATENCIES.append((now, latency))
     API_LATENCIES = [(t, l) for (t, l) in API_LATENCIES if t >= now - 43200]
+
 
 def get_latency_metrics():
     if not API_LATENCIES:
@@ -147,11 +162,13 @@ def get_latency_metrics():
     avg = sum(l for _, l in API_LATENCIES) / len(API_LATENCIES)
     return last, avg
 
+
 def get_latency_extremes():
     if not API_LATENCIES:
         return None, None
     values = [l for _, l in API_LATENCIES]
     return max(values), min(values)
+
 
 def fetch_events():
     global API_CHECKS_TODAY, API_SUCCESSES_TODAY, LAST_SUCCESSFUL_SYNC
@@ -191,12 +208,14 @@ def fetch_events():
 
     return {str(ev["id"]): ev for ev in events}
 
+
 def discord_timestamp(dt_str, style="F"):
     try:
         dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
         return f"<t:{int(dt.timestamp())}:{style}>"
     except Exception:
         return dt_str
+
 
 def compare_events(old_event, new_event):
     fields = {
@@ -237,6 +256,7 @@ def compare_events(old_event, new_event):
             diffs[label] = (old_val, new_val)
 
     return diffs
+
 
 def build_embed(event, change_type="created", diffs=None):
     meetup_time = discord_timestamp(event.get("meetup_at"), "F") if event.get("meetup_at") else "Not specified"
@@ -387,22 +407,7 @@ def heartbeat_scheduler():
 
         time.sleep(1)
 
-def daily_summary_scheduler():
-    global LAST_SUMMARY_DATE
 
-    while True:
-        now = datetime.now(timezone.utc)
-        current_date = now.date()
-
-        if now.hour == 0 and now.minute == 0 and now.second < 5:
-            if LAST_SUMMARY_DATE != current_date:
-                send_daily_summary()
-                reset_daily_counters()
-                LAST_SUMMARY_DATE = current_date
-                time.sleep(5)
-
-        time.sleep(1)
-        
 def send_daily_summary():
     if not DAILY_SUMMARY_WEBHOOK_URL:
         return
@@ -520,6 +525,23 @@ def reset_daily_counters():
 
     RESTARTS_TODAY = 0
     logger.info("Daily counters reset")
+
+
+def daily_summary_scheduler():
+    global LAST_SUMMARY_DATE
+
+    while True:
+        now = datetime.now(timezone.utc)
+        current_date = now.date()
+
+        if now.hour == 0 and now.minute == 0 and now.second < 5:
+            if LAST_SUMMARY_DATE != current_date:
+                send_daily_summary()
+                reset_daily_counters()
+                LAST_SUMMARY_DATE = current_date
+                time.sleep(5)
+
+        time.sleep(1)
 
 
 def restart_scheduler():
@@ -669,7 +691,6 @@ def run_startup_self_test():
         logger.error(f"Failed to send startup self-test: {e}")
 
 
-# ⭐ EVENT UPDATE LOOP (Filtering OFF)
 def event_update_loop():
     ensure_database_exists()
 
@@ -684,9 +705,7 @@ def event_update_loop():
             time.sleep(60)
             continue
 
-        # Filtering OFF — all events included
-        # new_db = filter_events_by_keywords(new_db)
-
+        # Filtering OFF everywhere
         changes = detect_changes(old_db, new_db)
 
         for change_type, event, diffs in changes:
@@ -698,7 +717,6 @@ def event_update_loop():
         time.sleep(300)
 
 
-# ⭐ DEBUG PAGES
 app = Flask(__name__)
 
 
@@ -712,7 +730,7 @@ def debug_db():
     html = """
     <html>
     <head>
-        <title>Events DB Viewer</title>
+        <title>Events Database</title>
         <style>
             body { font-family: Arial; background: #1e1e1e; color: white; padding: 20px; }
             table { width: 100%; border-collapse: collapse; margin-top: 20px; }
@@ -722,7 +740,6 @@ def debug_db():
             h1 { color: #4da3ff; }
             input { padding: 8px; width: 250px; margin-right: 10px; }
         </style>
-
         <script>
             function filterTable() {
                 let keyword = document.getElementById("keyword").value.toLowerCase();
@@ -833,6 +850,7 @@ def debug_logs():
 
     return html
 
+
 @app.route("/debug/stats", methods=["GET"])
 def debug_stats():
     try:
@@ -939,7 +957,6 @@ def debug_stats():
 
     return html
 
-# ⭐ DISCORD BOT + FLASK SERVER STARTUP
 
 intents = discord.Intents.default()
 discord_bot = discord.Client(intents=intents)
@@ -949,27 +966,22 @@ tree = app_commands.CommandTree(discord_bot)
 if __name__ == "__main__":
     logger.info("HTTP debug server starting on port 8080")
 
-    # Start Flask debug server
     import threading
     threading.Thread(
         target=lambda: app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080))),
         daemon=True
     ).start()
 
-    # Send restart completed embed
     send_restart_completed()
 
-    # Start schedulers
     threading.Thread(target=heartbeat_scheduler, daemon=True).start()
     threading.Thread(target=daily_summary_scheduler, daemon=True).start()
     threading.Thread(target=restart_countdown_scheduler, daemon=True).start()
     threading.Thread(target=restart_scheduler, daemon=True).start()
 
-    # ⭐ Start event update loop (Filtering OFF)
     threading.Thread(target=event_update_loop, daemon=True).start()
     logger.info("Event update loop started")
 
-    # Load token
     DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
     if not DISCORD_BOT_TOKEN:
         logger.critical("DISCORD_BOT_TOKEN is missing! Bot cannot start.")
