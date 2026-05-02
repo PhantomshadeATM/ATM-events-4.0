@@ -999,7 +999,7 @@ if __name__ == "__main__":
     # Start Flask debug server (threaded)
     import threading
     threading.Thread(
-        target=lambda: app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080))),
+        target=lambda: app.run(host="0.0.0.0", port=int(os.getenv("PORT"))),
         daemon=True
     ).start()
 
@@ -1007,32 +1007,26 @@ if __name__ == "__main__":
     send_restart_completed()
 
     # Start heartbeat scheduler
-    threading.Thread(
-        target=heartbeat_scheduler,
-        daemon=True
-    ).start()
+    threading.Thread(target=heartbeat_scheduler, daemon=True).start()
 
     # Start daily summary scheduler
-    threading.Thread(
-        target=daily_summary_scheduler,
-        daemon=True
-    ).start()
+    threading.Thread(target=daily_summary_scheduler, daemon=True).start()
 
     # Start restart countdown scheduler
-    threading.Thread(
-        target=restart_countdown_scheduler,
-        daemon=True
-    ).start()
+    threading.Thread(target=restart_countdown_scheduler, daemon=True).start()
 
     # Start daily restart scheduler
-    threading.Thread(
-        target=restart_scheduler,
-        daemon=True
-    ).start()
+    threading.Thread(target=restart_scheduler, daemon=True).start()
+
+    # Load token
+    DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+    if not DISCORD_BOT_TOKEN:
+        logger.critical("DISCORD_BOT_TOKEN is missing! Bot cannot start.")
+        raise SystemExit("Missing DISCORD_BOT_TOKEN")
 
     logger.info("Starting Discord bot...")
     try:
-        DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+        discord_bot.run(DISCORD_BOT_TOKEN)
     except Exception as e:
         logger.critical(f"Fatal bot error: {e}")
         report_error(
