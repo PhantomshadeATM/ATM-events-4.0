@@ -22,7 +22,7 @@ HEARTBEAT_WEBHOOK_URL = os.environ.get("DISCORD_HEARTBEAT_WEBHOOK_URL")
 DAILY_SUMMARY_WEBHOOK_URL = os.environ.get("DISCORD_DAILY_SUMMARY_WEBHOOK_URL")
 DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
 
-DB_FILE = "events_db.json"
+DB_FILE = "/app/events_db.json"
 START_TIME = time.time()
 
 API_LATENCIES = []
@@ -103,7 +103,7 @@ def save_db(data):
     try:
         with open(DB_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
-        logger.info("Database saved")
+        logger.info(f"Database saved with {len(data)} events")
     except Exception as e:
         logger.error(f"Failed to save DB: {e}")
 
@@ -692,7 +692,6 @@ def run_startup_self_test():
 
 
 def event_update_loop():
-    ensure_database_exists()
 
     while True:
         logger.info("Running event update loop...")
