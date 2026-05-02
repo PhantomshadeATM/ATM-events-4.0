@@ -614,7 +614,37 @@ def send_restart_countdown():
         logger.info("Restart countdown embed sent")
     except Exception as e:
         report_error("Restart Countdown Failure", "Failed to send restart countdown embed.", str(e))
-        
+
+def event_update_loop():
+    ensure_database_exists()
+
+    while True:
+        logger.info("Running event update loop...")
+
+        old_db = load_db()
+        new_db = fetch_events()
+
+        if new_db is None:
+            logger.warning("Fetch returned None — retrying in 60 seconds")
+            time.sleep(60)
+            continue
+
+        # Apply keyword filters
+        new_db = filter_events_by_keywords(new_db)
+
+        # Detect changes
+        changes = detect_changes(old_db, new_db)
+
+        # Send notifications
+        for change_type, event, diffs in changes:
+            send_to_discord(event, change_type, diffs)
+
+        # Save updated DB
+        save_db(new_db)
+
+        logger.info("Event update loop completed — sleeping 5 minutes")
+        time.sleep(300)  # 5 minutes
+
 def restart_countdown_scheduler():
     while True:
         now = datetime.now(timezone.utc)
@@ -1017,6 +1047,10 @@ if __name__ == "__main__":
 
     # Start daily restart scheduler
     threading.Thread(target=restart_scheduler, daemon=True).start()
+
+    # Start event update loop
+    threading.Thread(target=event_update_loop, daemon=True).start()
+    logger.info("Event update loop started")
 
     # Load token
     DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
