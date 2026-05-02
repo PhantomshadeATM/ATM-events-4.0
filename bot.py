@@ -962,8 +962,9 @@ intents = discord.Intents.default()
 discord_bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(discord_bot)
 
-
 if __name__ == "__main__":
+    ensure_database_exists()   # DB created BEFORE anything else
+
     logger.info("HTTP debug server starting on port 8080")
 
     import threading
