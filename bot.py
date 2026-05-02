@@ -47,15 +47,6 @@ ATM_COLOR = 0x770202
 ATM_LOGO_URL = "https://cdn.imgpile.com/f/0PFveX5_xl.png"
 ATM_BANNER_URL = "https://cdn.imgpile.com/f/13NFeJc_xl.png"
 
-
-KEYWORD_FILTERS = {
-    "convoy": True,
-    "training": False,
-    "atm": True,
-    "special": False,
-}
-
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -65,11 +56,9 @@ logger = logging.getLogger("ATM-Bot")
 
 LOG_BUFFER = deque(maxlen=200)
 
-
 class LogCaptureHandler(logging.Handler):
     def emit(self, record):
         LOG_BUFFER.append(self.format(record))
-
 
 capture_handler = LogCaptureHandler()
 capture_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
@@ -84,17 +73,11 @@ retries = Retry(
 )
 session.mount("https://", HTTPAdapter(max_retries=retries))
 
-
 def ensure_database_exists():
     if not os.path.exists(DB_FILE):
         with open(DB_FILE, "w", encoding="utf-8") as f:
             json.dump({}, f, indent=2)
         logger.info("Created empty events_db.json")
-
-
-def should_restart():
-    return (time.time() - START_TIME) >= 86400
-
 
 def load_db():
     try:
@@ -104,7 +87,6 @@ def load_db():
         logger.error(f"Failed to load DB: {e}")
         return {}
 
-
 def save_db(data):
     try:
         with open(DB_FILE, "w", encoding="utf-8") as f:
@@ -112,7 +94,6 @@ def save_db(data):
         logger.info("Database saved")
     except Exception as e:
         logger.error(f"Failed to save DB: {e}")
-
 
 def report_error(title, message, details=None):
     global ERRORS_REPORTED_TODAY
@@ -152,14 +133,12 @@ def report_error(title, message, details=None):
     except Exception as e:
         logger.error(f"Failed to send error report: {e}")
 
-
 def record_latency(latency):
     global LAST_API_LATENCY, API_LATENCIES
     now = time.time()
     LAST_API_LATENCY = latency
     API_LATENCIES.append((now, latency))
     API_LATENCIES = [(t, l) for (t, l) in API_LATENCIES if t >= now - 43200]
-
 
 def get_latency_metrics():
     if not API_LATENCIES:
@@ -168,13 +147,11 @@ def get_latency_metrics():
     avg = sum(l for _, l in API_LATENCIES) / len(API_LATENCIES)
     return last, avg
 
-
 def get_latency_extremes():
     if not API_LATENCIES:
         return None, None
     values = [l for _, l in API_LATENCIES]
     return max(values), min(values)
-
 
 def fetch_events():
     global API_CHECKS_TODAY, API_SUCCESSES_TODAY, LAST_SUCCESSFUL_SYNC
@@ -214,14 +191,12 @@ def fetch_events():
 
     return {str(ev["id"]): ev for ev in events}
 
-
 def discord_timestamp(dt_str, style="F"):
     try:
         dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
         return f"<t:{int(dt.timestamp())}:{style}>"
     except Exception:
         return dt_str
-
 
 def compare_events(old_event, new_event):
     fields = {
@@ -262,7 +237,6 @@ def compare_events(old_event, new_event):
             diffs[label] = (old_val, new_val)
 
     return diffs
-
 
 def build_embed(event, change_type="created", diffs=None):
     meetup_time = discord_timestamp(event.get("meetup_at"), "F") if event.get("meetup_at") else "Not specified"
@@ -373,26 +347,14 @@ def send_heartbeat():
     last_latency, avg_latency = get_latency_metrics()
 
     fields = [
-        {
-            "name": "Heartbeat Time",
-            "value": f"<t:{int(time.time())}:F>",
-            "inline": False
-        }
+        {"name": "Heartbeat Time", "value": f"<t:{int(time.time())}:F>", "inline": False}
     ]
 
     if last_latency is not None:
-        fields.append({
-            "name": "Last API latency",
-            "value": f"{last_latency:.2f} seconds",
-            "inline": True
-        })
+        fields.append({"name": "Last API latency", "value": f"{last_latency:.2f} seconds", "inline": True})
 
     if avg_latency is not None:
-        fields.append({
-            "name": "12h average API latency",
-            "value": f"{avg_latency:.2f} seconds",
-            "inline": True
-        })
+        fields.append({"name": "12h average API latency", "value": f"{avg_latency:.2f} seconds", "inline": True})
 
     embed = {
         "username": "TruckersMP Events Bot — Heartbeat",
@@ -412,20 +374,16 @@ def send_heartbeat():
         HEARTBEATS_SENT_TODAY += 1
         logger.info("Heartbeat sent")
     except Exception as e:
-        report_error(
-            "Heartbeat Send Failure",
-            "Failed to send heartbeat message.",
-            str(e)
-        )
+        report_error("Heartbeat Send Failure", "Failed to send heartbeat message.", str(e))
+
 
 def heartbeat_scheduler():
     while True:
         now = datetime.now(timezone.utc)
 
-        # Trigger heartbeat at 06:00 UTC or 18:00 UTC
         if now.minute == 0 and now.second < 5 and now.hour in (6, 18):
             send_heartbeat()
-            time.sleep(5)  # prevents duplicate sends
+            time.sleep(5)
 
         time.sleep(1)
 
@@ -436,16 +394,15 @@ def daily_summary_scheduler():
         now = datetime.now(timezone.utc)
         current_date = now.date()
 
-        # Fire exactly at 00:00:00–00:00:04 UTC
         if now.hour == 0 and now.minute == 0 and now.second < 5:
             if LAST_SUMMARY_DATE != current_date:
                 send_daily_summary()
                 reset_daily_counters()
                 LAST_SUMMARY_DATE = current_date
-                time.sleep(5)  # prevent duplicate sends
+                time.sleep(5)
 
         time.sleep(1)
-    
+        
 def send_daily_summary():
     if not DAILY_SUMMARY_WEBHOOK_URL:
         return
@@ -564,27 +521,26 @@ def reset_daily_counters():
     RESTARTS_TODAY = 0
     logger.info("Daily counters reset")
 
+
 def restart_scheduler():
     global RESTARTS_TODAY, START_TIME
 
     while True:
         now = datetime.now(timezone.utc)
 
-        # Fire restart exactly at 00:00:00–00:00:04 UTC
         if now.hour == 0 and now.minute == 0 and now.second < 5:
             RESTARTS_TODAY += 1
             logger.warning("Scheduled daily restart triggered at 00:00 UTC")
 
-            # Report restart to Discord (optional)
             report_error(
                 "Scheduled Restart",
                 "Bot is restarting as part of the daily UTC reset."
             )
 
-            # Hard exit — Railway or systemd will restart the bot
             os._exit(1)
 
         time.sleep(1)
+
 
 def send_restart_countdown():
     now_utc = datetime.now(timezone.utc)
@@ -601,7 +557,7 @@ def send_restart_countdown():
                     "This ensures clean memory, accurate counters, and stable performance."
                 ),
                 "fields": [
-                    {"name": "Restart Time", "value": "<t:{}:F>".format(unix_now + 300), "inline": False},
+                    {"name": "Restart Time", "value": f"<t:{unix_now + 300}:F>", "inline": False},
                     {"name": "Reason", "value": "Daily scheduled maintenance restart", "inline": False},
                 ],
                 "timestamp": now_utc.isoformat(),
@@ -615,47 +571,18 @@ def send_restart_countdown():
     except Exception as e:
         report_error("Restart Countdown Failure", "Failed to send restart countdown embed.", str(e))
 
-def event_update_loop():
-    ensure_database_exists()
-
-    while True:
-        logger.info("Running event update loop...")
-
-        old_db = load_db()
-        new_db = fetch_events()
-
-        if new_db is None:
-            logger.warning("Fetch returned None — retrying in 60 seconds")
-            time.sleep(60)
-            continue
-
-        # Apply keyword filters
-        new_db = filter_events_by_keywords(new_db)
-
-        # Detect changes
-        changes = detect_changes(old_db, new_db)
-
-        # Send notifications
-        for change_type, event, diffs in changes:
-            send_to_discord(event, change_type, diffs)
-
-        # Save updated DB
-        save_db(new_db)
-
-        logger.info("Event update loop completed — sleeping 5 minutes")
-        time.sleep(300)  # 5 minutes
 
 def restart_countdown_scheduler():
     while True:
         now = datetime.now(timezone.utc)
 
-        # Fire countdown at 23:55:00–23:55:04 UTC
         if now.hour == 23 and now.minute == 55 and now.second < 5:
             send_restart_countdown()
-            time.sleep(5)  # prevent duplicates
+            time.sleep(5)
 
         time.sleep(1)
-        
+
+
 def send_restart_completed():
     now_utc = datetime.now(timezone.utc)
     unix_now = int(now_utc.timestamp())
@@ -688,6 +615,7 @@ def send_restart_completed():
             "Failed to send restart completion embed.",
             str(e)
         )
+
 
 def run_startup_self_test():
     now_utc = datetime.now(timezone.utc)
@@ -741,43 +669,36 @@ def run_startup_self_test():
         logger.error(f"Failed to send startup self-test: {e}")
 
 
-def filter_events_by_keywords(events):
-    filtered = {}
+# ⭐ EVENT UPDATE LOOP (Filtering OFF)
+def event_update_loop():
+    ensure_database_exists()
 
-    for event_id, event in events.items():
-        name = event.get("name", "").lower()
-        description = event.get("description", "").lower()
-        departure = event.get("departure", {}).get("city", "").lower()
-        arrival = event.get("arrive", {}).get("city", "").lower()
+    while True:
+        logger.info("Running event update loop...")
 
-        for keyword, enabled in KEYWORD_FILTERS.items():
-            if not enabled:
-                continue
-            if (
-                keyword in name
-                or keyword in description
-                or keyword in departure
-                or keyword in arrival
-            ):
-                filtered[event_id] = event
-                break
+        old_db = load_db()
+        new_db = fetch_events()
 
-    return filtered
-
-
-def filter_events_by_date(events, date_str):
-    filtered = {}
-
-    for event_id, event in events.items():
-        start_at = event.get("start_at")
-        if not start_at:
+        if new_db is None:
+            logger.warning("Fetch returned None — retrying in 60 seconds")
+            time.sleep(60)
             continue
-        if start_at.startswith(date_str):
-            filtered[event_id] = event
 
-    return filtered
+        # Filtering OFF — all events included
+        # new_db = filter_events_by_keywords(new_db)
+
+        changes = detect_changes(old_db, new_db)
+
+        for change_type, event, diffs in changes:
+            send_to_discord(event, change_type, diffs)
+
+        save_db(new_db)
+
+        logger.info("Event update loop completed — sleeping 5 minutes")
+        time.sleep(300)
 
 
+# ⭐ DEBUG PAGES
 app = Flask(__name__)
 
 
@@ -948,27 +869,25 @@ def debug_stats():
             if kw in name or kw in desc:
                 keywords[kw] = keywords.get(kw, 0) + 1
 
-    html = """
+    html = f"""
     <html>
     <head>
         <title>Event Statistics</title>
         <style>
-            body { font-family: Arial; background: #1e1e1e; color: white; padding: 20px; }
-            h1 { color: #4da3ff; }
-            h2 { color: #4da3ff; margin-top: 30px; }
-            table { width: 50%; border-collapse: collapse; margin-top: 10px; }
-            th, td { border: 1px solid #444; padding: 8px; }
-            th { background: #333; }
+            body {{ font-family: Arial; background: #1e1e1e; color: white; padding: 20px; }}
+            h1 {{ color: #4da3ff; }}
+            h2 {{ color: #4da3ff; margin-top: 30px; }}
+            table {{ width: 50%; border-collapse: collapse; margin-top: 10px; }}
+            th, td {{ border: 1px solid #444; padding: 8px; }}
+            th {{ background: #333; }}
         </style>
     </head>
     <body>
         <h1>Event Statistics</h1>
 
         <h2>General</h2>
-        <p>Total events: <b>{}</b></p>
-    """.format(total)
+        <p>Total events: <b>{total}</b></p>
 
-    html += """
         <h2>Events per Month</h2>
         <table>
             <tr><th>Month</th><th>Count</th></tr>
@@ -997,9 +916,9 @@ def debug_stats():
     """
 
     for server, count in sorted(servers.items(), key=lambda x: -x[1]):
-        html += f"<tr><td>{server}</td><td>{count}</td></tr>"
+        html += f"<tr><td>{server}</td><td>{count}</td></tr>
 
-    html += """
+            html += """
         </table>
 
         <h2>Keyword Frequency</h2>
@@ -1019,36 +938,34 @@ def debug_stats():
 
     return html
 
+
+# ⭐ DISCORD BOT + FLASK SERVER STARTUP
+
 intents = discord.Intents.default()
 discord_bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(discord_bot)
 
+
 if __name__ == "__main__":
     logger.info("HTTP debug server starting on port 8080")
 
-    # Start Flask debug server (threaded)
+    # Start Flask debug server
     import threading
     threading.Thread(
-        target=lambda: app.run(host="0.0.0.0", port=int(os.getenv("PORT"))),
+        target=lambda: app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080))),
         daemon=True
     ).start()
 
-    # Send restart completed embed on startup
+    # Send restart completed embed
     send_restart_completed()
 
-    # Start heartbeat scheduler
+    # Start schedulers
     threading.Thread(target=heartbeat_scheduler, daemon=True).start()
-
-    # Start daily summary scheduler
     threading.Thread(target=daily_summary_scheduler, daemon=True).start()
-
-    # Start restart countdown scheduler
     threading.Thread(target=restart_countdown_scheduler, daemon=True).start()
-
-    # Start daily restart scheduler
     threading.Thread(target=restart_scheduler, daemon=True).start()
 
-    # Start event update loop
+    # ⭐ Start event update loop (Filtering OFF)
     threading.Thread(target=event_update_loop, daemon=True).start()
     logger.info("Event update loop started")
 
