@@ -1032,7 +1032,7 @@ if __name__ == "__main__":
 
     logger.info("Starting Discord bot...")
     try:
-        discord_bot.run(DISCORD_BOT_TOKEN)
+        DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
     except Exception as e:
         logger.critical(f"Fatal bot error: {e}")
         report_error(
