@@ -833,7 +833,6 @@ def debug_logs():
 
     return html
 
-
 @app.route("/debug/stats", methods=["GET"])
 def debug_stats():
     try:
@@ -869,25 +868,27 @@ def debug_stats():
             if kw in name or kw in desc:
                 keywords[kw] = keywords.get(kw, 0) + 1
 
-    html = f"""
+    html = """
     <html>
     <head>
         <title>Event Statistics</title>
         <style>
-            body {{ font-family: Arial; background: #1e1e1e; color: white; padding: 20px; }}
-            h1 {{ color: #4da3ff; }}
-            h2 {{ color: #4da3ff; margin-top: 30px; }}
-            table {{ width: 50%; border-collapse: collapse; margin-top: 10px; }}
-            th, td {{ border: 1px solid #444; padding: 8px; }}
-            th {{ background: #333; }}
+            body { font-family: Arial; background: #1e1e1e; color: white; padding: 20px; }
+            h1 { color: #4da3ff; }
+            h2 { color: #4da3ff; margin-top: 30px; }
+            table { width: 50%; border-collapse: collapse; margin-top: 10px; }
+            th, td { border: 1px solid #444; padding: 8px; }
+            th { background: #333; }
         </style>
     </head>
     <body>
         <h1>Event Statistics</h1>
 
         <h2>General</h2>
-        <p>Total events: <b>{total}</b></p>
+        <p>Total events: <b>{}</b></p>
+    """.format(total)
 
+    html += """
         <h2>Events per Month</h2>
         <table>
             <tr><th>Month</th><th>Count</th></tr>
@@ -916,9 +917,9 @@ def debug_stats():
     """
 
     for server, count in sorted(servers.items(), key=lambda x: -x[1]):
-        html += f"<tr><td>{server}</td><td>{count}</td></tr>
+        html += f"<tr><td>{server}</td><td>{count}</td></tr>"
 
-            html += """
+    html += """
         </table>
 
         <h2>Keyword Frequency</h2>
@@ -937,7 +938,6 @@ def debug_stats():
     """
 
     return html
-
 
 # ⭐ DISCORD BOT + FLASK SERVER STARTUP
 
