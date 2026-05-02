@@ -23,6 +23,11 @@ DAILY_SUMMARY_WEBHOOK_URL = os.environ.get("DISCORD_DAILY_SUMMARY_WEBHOOK_URL")
 DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
 
 DB_FILE = "/app/events_db.json"
+
+if not os.path.exists(DB_FILE):
+    with open(DB_FILE, "w", encoding="utf-8") as f:
+        json.dump({}, f, indent=2)
+    print("Created empty events_db.json (early init)")
 START_TIME = time.time()
 
 API_LATENCIES = []
@@ -962,7 +967,6 @@ discord_bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(discord_bot)
 
 if __name__ == "__main__":
-    ensure_database_exists()   # DB created BEFORE anything else
 
     logger.info("HTTP debug server starting on port 8080")
 
