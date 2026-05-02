@@ -1006,33 +1006,33 @@ if __name__ == "__main__":
     # Send restart completed embed on startup
     send_restart_completed()
 
-    # Start hourly heartbeat scheduler
+    # Start heartbeat scheduler
     threading.Thread(
         target=heartbeat_scheduler,
         daemon=True
     ).start()
 
-    # Start daily summary scheduler (fires at 00:00 UTC)
+    # Start daily summary scheduler
     threading.Thread(
         target=daily_summary_scheduler,
         daemon=True
     ).start()
 
-    # Start restart countdown scheduler (fires at 23:55 UTC)
+    # Start restart countdown scheduler
     threading.Thread(
         target=restart_countdown_scheduler,
         daemon=True
     ).start()
 
-    # Start daily restart scheduler (fires at 00:00 UTC)
+    # Start daily restart scheduler
     threading.Thread(
         target=restart_scheduler,
         daemon=True
     ).start()
 
-    logger.info("Starting main monitoring loop")
+    logger.info("Starting Discord bot...")
     try:
-        main()
+        discord_bot.run(DISCORD_BOT_TOKEN)
     except Exception as e:
         logger.critical(f"Fatal bot error: {e}")
         report_error(
