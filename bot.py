@@ -966,6 +966,100 @@ intents = discord.Intents.default()
 discord_bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(discord_bot)
 
+@discord_bot.event
+async def on_ready():
+    await tree.sync()
+    logger.info("Slash commands synced")
+
+@tree.command(name="daily_summary", description="Show the current daily summary (ephemeral)")
+async def daily_summary_cmd(interaction: discord.Interaction):
+
+    # Build the same summary your scheduler uses
+    now_utc = datetime.now(timezone.utc)
+    unix_now = int(now_utc.timestamp())
+
+    last_latency, avg_latency = get_latency_metrics()
+    max_latency, min_latency = get_latency_extremes()
+
+    if API_CHECKS_TODAY > 0:
+        api_uptime = (API_SUCCESSES_TODAY / API_CHECKS_TODAY) * 100
+    else:
+        api_uptime = None
+
+    if LAST_SUCCESSFUL_SYNC is not None:
+        last_sync_unix = int(LAST_SUCCESSFUL_SYNC.timestamp())
+        last_sync_value = f"<t:{last_sync_unix}:R>"
+    else:
+        last_sync_value = "No successful sync yet"
+
+    api_health_lines = []
+    if api_uptime is not None:
+        api_health_lines.append(f"• Uptime: {api_uptime:.1f}%")
+    else:
+        api_health_lines.append("• Uptime: N/A")
+
+    if avg_latency is not None:
+        api_health_lines.append(f"• Avg latency: {avg_latency:.2f}s")
+    else:
+        api_health_lines.append("• Avg latency: N/A")
+
+    if max_latency is not None:
+        api_health_lines.append(f"• Max latency: {max_latency:.2f}s")
+    else:
+        api_health_lines.append("• Max latency: N/A")
+
+    if min_latency is not None:
+        api_health_lines.append(f"• Min latency: {min_latency:.2f}s")
+    else:
+        api_health_lines.append("• Min latency: N/A")
+
+    if API_SUCCESSES_TODAY == 0 and API_CHECKS_TODAY > 0:
+        api_status = "🔴 Down / Unstable"
+    elif API_SUCCESSES_TODAY > 0:
+        api_status = "🟢 Stable"
+    else:
+        api_status = "⚪ No data"
+
+    api_health_lines.append(f"• Status: {api_status}")
+
+    event_activity_lines = [
+        f"• Added: {EVENTS_ADDED_TODAY}",
+        f"• Updated: {EVENTS_UPDATED_TODAY}",
+        f"• Removed: {EVENTS_REMOVED_TODAY}",
+        f"• Total active events: {TOTAL_ACTIVE_EVENTS}",
+    ]
+
+    vtc_highlights_lines = [
+        f"• New ATM convoys: {EVENTS_ADDED_TODAY}",
+        f"• Updated ATM convoys: {EVENTS_UPDATED_TODAY}",
+        f"• Removed ATM convoys: {EVENTS_REMOVED_TODAY}",
+    ]
+
+    bot_health_lines = [
+        f"• Restarts today: {RESTARTS_TODAY}",
+        f"• Heartbeats sent: {HEARTBEATS_SENT_TODAY}",
+        f"• Errors reported: {ERRORS_REPORTED_TODAY}",
+    ]
+
+    embed = discord.Embed(
+        title="📊 At The Mile Logistics — Daily Summary",
+        description=f"Generated at: <t:{unix_now}:F>",
+        color=ATM_COLOR
+    )
+
+    embed.add_field(name="🟥 API Health", value="\n".join(api_health_lines), inline=False)
+    embed.add_field(name="🚚 Event Activity", value="\n".join(event_activity_lines), inline=False)
+    embed.add_field(name="🏢 ATM VTC Highlights", value="\n".join(vtc_highlights_lines), inline=False)
+    embed.add_field(name="🧠 Bot Health", value="\n".join(bot_health_lines), inline=False)
+    embed.add_field(name="🕒 Last successful sync", value=last_sync_value, inline=False)
+
+    embed.set_thumbnail(url=ATM_LOGO_URL)
+    embed.set_image(url=ATM_BANNER_URL)
+    embed.set_footer(text="At The Mile Logistics — Going the Distance")
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 if __name__ == "__main__":
 
     logger.info("HTTP debug server starting on port 8080")
