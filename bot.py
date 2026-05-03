@@ -709,7 +709,15 @@ def event_update_loop():
             time.sleep(60)
             continue
 
-        # Filtering OFF everywhere
+        # ⭐ FIRST RUN: DB EMPTY → DO NOT SEND NOTIFICATIONS
+        if not old_db:
+            logger.info("Initial sync detected — populating DB without sending notifications")
+            save_db(new_db)
+            logger.info("Initial sync complete — sleeping 5 minutes")
+            time.sleep(300)
+            continue
+
+        # Normal behaviour after first sync
         changes = detect_changes(old_db, new_db)
 
         for change_type, event, diffs in changes:
