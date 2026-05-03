@@ -979,7 +979,7 @@ async def on_ready():
     await tree.sync()
     logger.info("Slash commands synced")
 
-@tree.command(name="daily_summary", description="Show the current daily summary (ephemeral)")
+@tree.command(name="daily_summary", description="Show the daily summary")
 async def daily_summary_cmd(interaction: discord.Interaction):
 
     # Build the same summary your scheduler uses
